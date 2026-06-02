@@ -1,0 +1,6 @@
+[submodule "robot-movement"]
+	path = robot-movement
+	url = git@github.com:CARC-2026-Snooker/robot-movement.git
+[submodule "robot-vision-and-planning"]
+	path = robot-vision-and-planning
+	url = git@github.com:CARC-2026-Snooker/robot-vision-and-planning.git
