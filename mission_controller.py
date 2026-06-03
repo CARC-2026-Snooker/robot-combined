@@ -22,6 +22,7 @@ from config import (
 )
 from movement_client import MovementClient, MoveCmd, compute_move_cmd
 
+import signal
 
 # ─────────────────────────────────────────────────────────────────────────────
 # ROBOT STATE — live telemetry subscriber
@@ -95,10 +96,35 @@ class RobotState:
         try: self._sock.close()
         except: pass
 
+STOP_EVENT = threading.Event()
+_GLOBAL_MC = None
 
 # ─────────────────────────────────────────────────────────────────────────────
 # HELPERS
 # ─────────────────────────────────────────────────────────────────────────────
+def emergency_stop(reason="emergency stop"):
+    global _GLOBAL_MC
+    STOP_EVENT.set()
+    print(f"\n[EMERGENCY STOP] {reason}")
+
+    if _GLOBAL_MC is not None:
+        # UDP can drop packets, so send stop commands a few times.
+        for _ in range(5):
+            try:
+                _GLOBAL_MC.brake()
+                _GLOBAL_MC.stop()
+                _GLOBAL_MC.action("stop_spin")
+            except Exception as e:
+                print(f"[EMERGENCY STOP] send failed: {e}")
+            time.sleep(0.03)
+
+def _signal_emergency_stop(signum, frame):
+    emergency_stop("Ctrl+C / signal")
+    raise SystemExit(130)
+
+signal.signal(signal.SIGINT, _signal_emergency_stop)
+signal.signal(signal.SIGTERM, _signal_emergency_stop)
+
 def load_shooting_plan(path="robot_shooting_plan.json") -> dict:
     """Load the plan produced by snooker_planner.py."""
     if not os.path.exists(path):
@@ -168,6 +194,9 @@ def drive_to(target_x_mm: float, target_y_mm: float,
     # ── Phase 1: Translate (locked to 270°) ──────────────────────────────
     if verbose: print("  Phase 1: translating...")
     while time.time() - t0 < timeout:
+        if STOP_EVENT.is_set():
+            mc.brake()
+            return False
         if not state.initialized:
             time.sleep(0.05)
             continue
@@ -221,6 +250,9 @@ def drive_to(target_x_mm: float, target_y_mm: float,
     if verbose: print(f"  Phase 2: rotating to {final_heading_deg:.1f}°...")
     rot_t0 = time.time()
     while time.time() - rot_t0 < 10.0:
+        if STOP_EVENT.is_set():
+            mc.brake()
+            return False
         if not state.initialized:
             time.sleep(0.05)
             continue
@@ -395,52 +427,62 @@ def demo_all_commands(state: RobotState, mc: MovementClient):
 # MAIN — your game loop goes here
 # ─────────────────────────────────────────────────────────────────────────────
 def main():
+    global _GLOBAL_MC
+
     state = RobotState()
     mc    = MovementClient()
+    _GLOBAL_MC = mc
 
-    print("Waiting for vision tracking...")
-    wait_for_tracking(state, timeout=15.0)
+    try:
+        print("Waiting for vision tracking...")
+        wait_for_tracking(state, timeout=15.0)
 
-    # ── Run the demo to test every command ───────────────────────────────
-    # demo_all_commands(state, mc)
+        # ── Run the demo to test every command ───────────────────────────────
+        # demo_all_commands(state, mc)
 
-    # ── Example competition loop ─────────────────────────────────────────
-    #
-    # PHOTO_POS_X = 600    # mm — centre of table width
-    # PHOTO_POS_Y = 2375   # mm — robot shoot line
-    # PHOTO_HEAD  = 270.0  # degrees — facing toward all tags
-    #
-    # while True:
-    #     # 1. Drive to photo position
-    #     drive_to(PHOTO_POS_X, PHOTO_POS_Y, PHOTO_HEAD, state, mc)
-    #
-    #     # 2. Scan table and get plan
-    #     plan = do_scan()
-    #     if not plan:
-    #         print("No balls left — done!")
-    #         break
-    #
-    #     # 3. Pick which ball to go for (choose yourself or pick first one)
-    #     zone = list(plan.keys())[0]
-    #     shot = plan[zone]
-    #
-    #     # 4. Rev up spin wheel while navigating
-    #     mc.action("rev_spin", power=25)
-    #
-    #     # 5. Drive to alignment position
-    #     rx, ry = shot["robot_alignment_xy"]
-    #     drive_to(rx, ry, shot["firing_angle_deg"], state, mc)
-    #
-    #     # 6. Launch sniper — blocks until shot fired or ESC
-    #     do_confirm_shot(zone, plan)
-    #     mc.action("stop_spin")
-    #
-    #     # 7. Loop back
+        # ── Example competition loop ─────────────────────────────────────────
+        #
+        PHOTO_POS_X = 600    # mm — centre of table width
+        PHOTO_POS_Y = 2375   # mm — robot shoot line
+        PHOTO_HEAD  = 270.0  # degrees — facing toward all tags
+        #
+        # while True:
+        #     # 1. Drive to photo position
+        drive_to(PHOTO_POS_X, PHOTO_POS_Y, PHOTO_HEAD, state, mc)
+        #
+        #     # 2. Scan table and get plan
+        plan = do_scan()
+        if not plan:
+            print("No balls left — done!")
+        else:
+            print(plan)
+            # break
+        #
+        #     # 3. Pick which ball to go for (choose yourself or pick first one)
+        #     zone = list(plan.keys())[0]
+        #     shot = plan[zone]
+        #
+        #     # 4. Rev up spin wheel while navigating
+        #     mc.action("rev_spin", power=25)
+        #
+        #     # 5. Drive to alignment position
+        #     rx, ry = shot["robot_alignment_xy"]
+        #     drive_to(rx, ry, shot["firing_angle_deg"], state, mc)
+        #
+        #     # 6. Launch sniper — blocks until shot fired or ESC
+        #     do_confirm_shot(zone, plan)
+        #     mc.action("stop_spin")
+        #
+        #     # 7. Loop back
 
-    mc.stop()
-    state.stop()
-    mc.close()
+        mc.stop()
+        state.stop()
+        mc.close()
 
+    finally:
+        emergency_stop("program exit")
+        state.stop()
+        mc.close()
 
 if __name__ == "__main__":
     main()

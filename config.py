@@ -25,8 +25,12 @@ import numpy as np
 SERIAL_PORT = "/dev/ttyUSB0"
 SERIAL_BAUD = 1_000_000
 
-CAM_HD_INDEX  = 2   # HD webcam (tracking + ball scan)
-CAM_4K_INDEX  = 1   # 4K sniper camera
+# CAM_HD_INDEX  = 2   # HD webcam (tracking + ball scan)
+# CAM_4K_INDEX  = 1   # 4K sniper camera
+
+CAM_FRONT = "/dev/camera_front"
+CAM_BACK = "/dev/camera_back"
+CAM_4K = "/dev/camera_4k"
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # NETWORK
@@ -179,10 +183,10 @@ HD_BRIGHTNESS_BOOST   = 1.0  # 1.0=off; increase if image is dark after low-expo
 # Power range: 0–100 (passed directly to Robot.Move / Robot.Rotate)
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 MOVE_POWER_MIN  = 15    # slowest movement power (near target)
-MOVE_POWER_MAX  = 60    # fastest movement power (far from target)
+MOVE_POWER_MAX  = 30    # fastest movement power (far from target)
 
-ROT_POWER_MIN   = 10    # slowest rotation power
-ROT_POWER_MAX   = 40    # fastest rotation power
+ROT_POWER_MIN   = 15    # slowest rotation power
+ROT_POWER_MAX   = 30    # fastest rotation power
 
 # Proportional gain: power = clamp(|error| * gain, MIN, MAX)
 MOVE_GAIN_MM    = 0.4   # power per mm of position error   (e.g. 50mm → power 20)

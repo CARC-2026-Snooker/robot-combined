@@ -18,6 +18,7 @@ Protocol (JSON over UDP):
 
 import sys, os
 from pathlib import Path
+import time
 
 sys.path.append(
     str(Path(__file__).parent / "robot-movement" / "library")
@@ -43,6 +44,9 @@ def run_server():
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     sock.bind(("0.0.0.0", MOVEMENT_CMD_PORT))
     sock.settimeout(0.5)   # non-blocking so we can handle KeyboardInterrupt
+    last_cmd_time = time.time()
+    COMMAND_TIMEOUT = 0.35
+    moving = False
     print(f"[movement_server] Listening on UDP port {MOVEMENT_CMD_PORT}")
 
     try:
@@ -50,6 +54,11 @@ def run_server():
             try:
                 data, _ = sock.recvfrom(4096)
             except socket.timeout:
+                if moving and time.time() - last_cmd_time > COMMAND_TIMEOUT:
+                    robot.Break()
+                    robot.Stop()
+                    # robot = Robot(serial_port=SERIAL_PORT, baudrate=SERIAL_BAUD)
+                    moving = False
                 continue
 
             try:
@@ -65,6 +74,7 @@ def run_server():
                 power = int(msg.get("power", 20))
                 direction = Direction[direction_str]
                 robot.Move(power, direction)
+                moving = True
 
             elif cmd == "rotate":
                 direction_str = msg.get("direction", "LEFT").upper()
@@ -77,9 +87,12 @@ def run_server():
                     power * multiplier[0], power * multiplier[2])
                 robot.right_wheel_driver.SetMotorPowers(
                     power * multiplier[1], power * multiplier[3])
+                moving = True
 
             elif cmd in ("stop", "brake"):
                 robot.Break()
+                robot.Stop()
+                moving = False
 
             elif cmd == "action":
                 action = msg.get("action", "")
