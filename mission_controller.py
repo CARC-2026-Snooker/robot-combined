@@ -1,52 +1,45 @@
 """
-mission_controller.py — High-level game loop skeleton.
+mission_controller.py — High-level game loop.
 
-This is YOUR file to write the competition logic in. All the tools
-you need are imported below. The structure shows you what's available.
+Startup order:
+  1. python new_main3.py          (vision + telemetry on port 5005)
+  2. python movement_server.py    (motor driver on port 5010)
+  3. python mission_controller.py (this file — reads state, sends commands)
 
-How to use:
-1. Run new_main3.py first (starts the vision + telemetry server).
-2. Run movement_server.py (starts the motor driver).
-3. Run this script — it reads telemetry and sends movement commands.
-
-Or combine everything: import RobotState, call start_vision_subprocess(), etc.
-
-Available tools/state:
-  state = RobotState()          → live robot position, errors, tracking state
-  mc    = MovementClient()      → send move/rotate/stop/action commands
-  plan  = load_shooting_plan()  → dict of zone → shot info from planner JSON
-  compute_move_cmd(...)         → compute the right movement command from errors
+All coordinates in mm (world frame, origin = Hole_3 corner).
+All headings in degrees (0=right +X, 90=up +Y, 270=down toward robot area).
+All movement commands are in ROBOT FRAME (not table frame).
 """
 
-import sys, os, time, json, math, subprocess
+import sys, os, time, json, math, subprocess, socket, threading
 sys.path.insert(0, os.path.dirname(__file__))
 
 from config import (
     TELEMETRY_PORT, MOVE_DEAD_MM, ROT_DEAD_DEG,
-    REAL_ZONES,
+    REAL_ZONES, MOVE_POWER_MIN, MOVE_POWER_MAX,
+    ROT_POWER_MIN, ROT_POWER_MAX,
+    MOVE_GAIN_MM, ROT_GAIN_DEG,
 )
 from movement_client import MovementClient, MoveCmd, compute_move_cmd
-import socket, threading
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# ROBOT STATE — subscribes to telemetry from new_main3.py
+# ROBOT STATE — live telemetry subscriber
 # ─────────────────────────────────────────────────────────────────────────────
 class RobotState:
     """
-    Listens on the telemetry UDP port and exposes the latest robot state.
+    Subscribes to new_main3.py's UDP telemetry (port 5005).
+    All values are updated in a background thread.
 
-    Telemetry packet keys (sent by new_main3.py / sniper_4k.py):
-      initialized      bool
-      x_mm, y_mm       float  — robot centre world position in mm
-      heading_dx/dy    float  — unit heading vector
-      state            str    — "STILL" | "MOVING" | "TRANSITIONING" | "LOST"
-      x_error_mm       float  — position error from plan (AIMING state)
-      y_error_mm       float
-      ang_error_deg    float
-      app_state        str    — "DRIVING" | "AIMING" | "LOCKED"
+    Key properties:
+      .initialized        → bool: tracking active
+      .position_mm        → (x_mm, y_mm): robot centre world position
+      .heading            → (dx, dy): unit heading vector
+      .heading_deg        → float: heading in degrees
+      .tracking_state     → "STILL"|"MOVING"|"TRANSITIONING"|"LOST"
+      .app_state          → "DRIVING"|"AIMING"
+      .get()              → full raw dict for custom access
     """
-
     def __init__(self, port: int = TELEMETRY_PORT):
         self._sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self._sock.bind(("0.0.0.0", port))
@@ -54,8 +47,7 @@ class RobotState:
         self._data: dict = {}
         self._lock = threading.Lock()
         self._running = True
-        self._thread = threading.Thread(target=self._listen, daemon=True)
-        self._thread.start()
+        threading.Thread(target=self._listen, daemon=True).start()
 
     def _listen(self):
         while self._running:
@@ -64,9 +56,7 @@ class RobotState:
                 data = json.loads(raw.decode())
                 with self._lock:
                     self._data = data
-            except socket.timeout:
-                pass
-            except Exception:
+            except (socket.timeout, json.JSONDecodeError):
                 pass
 
     def get(self) -> dict:
@@ -88,12 +78,22 @@ class RobotState:
         return d.get("heading_dx", 1.0), d.get("heading_dy", 0.0)
 
     @property
+    def heading_deg(self) -> float:
+        hdx, hdy = self.heading
+        return (math.degrees(math.atan2(hdy, hdx)) + 360) % 360
+
+    @property
     def tracking_state(self) -> str:
         return self.get().get("state", "LOST")
 
+    @property
+    def app_state(self) -> str:
+        return self.get().get("app_state", "DRIVING")
+
     def stop(self):
         self._running = False
-        self._sock.close()
+        try: self._sock.close()
+        except: pass
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -107,148 +107,337 @@ def load_shooting_plan(path="robot_shooting_plan.json") -> dict:
         return json.load(f)
 
 
-def wait_for_tracking(state: RobotState, timeout=10.0):
-    """Block until tracking is initialised or timeout."""
+def wait_for_tracking(state: RobotState, timeout=15.0, verbose=True):
+    """Block until tracking initialises or raise TimeoutError."""
     t0 = time.time()
     while not state.initialized:
         if time.time() - t0 > timeout:
-            raise TimeoutError("Tracking not initialised in time.")
+            raise TimeoutError("Tracking not initialised — make sure tags are visible.")
+        if verbose:
+            print(f"  waiting for tracking... ({time.time()-t0:.0f}s)", end="\r")
         time.sleep(0.1)
+    if verbose:
+        print(f"  Tracking OK. Position: {state.position_mm}")
+
+
+def _ang_diff(a, b):
+    """Signed angular difference a - b, normalised to (-180, 180]."""
+    d = a - b
+    while d >  180: d -= 360
+    while d < -180: d += 360
+    return d
+
+
+def _proportional_power(err_abs, gain, pmin, pmax):
+    return int(max(pmin, min(pmax, err_abs * gain)))
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# DRIVE TO — improved: lock 270° while driving, then rotate to final heading
+# ─────────────────────────────────────────────────────────────────────────────
+DRIVE_HEADING = 270.0   # robot always faces this direction while translating
+                        # (all tags are ahead at 270°, keeps vision working)
 
 
 def drive_to(target_x_mm: float, target_y_mm: float,
-             target_heading_deg: float,
+             final_heading_deg: float,
              state: RobotState, mc: MovementClient,
-             pos_tol_mm: float = 20.0,
+             pos_tol_mm: float = 30.0,
              ang_tol_deg: float = 2.0,
-             timeout: float = 30.0):
+             timeout: float = 45.0,
+             verbose: bool = True) -> bool:
     """
-    Blocking drive loop: move robot to (target_x_mm, target_y_mm) facing
-    target_heading_deg. Returns when within tolerances or on timeout.
+    Drive robot to (target_x_mm, target_y_mm), then rotate to final_heading_deg.
 
-    All coordinates in mm, heading in degrees (world frame).
-    Movement commands are in ROBOT FRAME (FRONT/BACK/LEFT/RIGHT/ROTATE).
+    Phase 1 — TRANSLATE while locked to DRIVE_HEADING (270°):
+      - Continuously corrects heading back to 270° (keeps tags in view)
+      - Moves FRONT/BACK (Y) and LEFT/RIGHT (X) based on position error
+      - Stops when within pos_tol_mm
+
+    Phase 2 — ROTATE to final_heading_deg:
+      - Rotates in place until within ang_tol_deg
+
+    Commands are in ROBOT FRAME. Sends a stop after each phase.
+    Returns True on success, False on timeout.
     """
+    if verbose:
+        print(f"[drive_to] target=({target_x_mm:.0f}, {target_y_mm:.0f}) heading={final_heading_deg:.1f}°")
+
     t0 = time.time()
+
+    # ── Phase 1: Translate (locked to 270°) ──────────────────────────────
+    if verbose: print("  Phase 1: translating...")
     while time.time() - t0 < timeout:
         if not state.initialized:
             time.sleep(0.05)
             continue
 
         x_mm, y_mm = state.position_mm
-        hdx, hdy   = state.heading
-        curr_head  = math.degrees(math.atan2(hdy, hdx)) % 360
+        x_err = x_mm - target_x_mm   # + = too far right
+        y_err = y_mm - target_y_mm   # + = too far forward (past target)
 
-        x_err = x_mm - target_x_mm     # positive = too far right
-        y_err = y_mm - target_y_mm     # positive = too far forward
+        if math.hypot(x_err, y_err) < pos_tol_mm:
+            break
 
-        ang_err = curr_head - target_heading_deg
-        if ang_err >  180: ang_err -= 360
-        if ang_err < -180: ang_err += 360
+        # Keep heading locked to DRIVE_HEADING while translating
+        head_err = _ang_diff(state.heading_deg, DRIVE_HEADING)
 
-        dist_err = math.hypot(x_err, y_err)
+        if abs(head_err) > 3.0:
+            # Correct heading first, then translate
+            pwr = _proportional_power(abs(head_err), ROT_GAIN_DEG,
+                                      ROT_POWER_MIN, ROT_POWER_MAX)
+            d = "RIGHT" if head_err > 0 else "LEFT"
+            mc.send(MoveCmd(cmd="rotate", direction=d, power=pwr))
+        else:
+            # Translate: transform world errors to robot frame (robot faces 270° = -Y)
+            # At 270°: robot FRONT = world -Y direction
+            #          robot RIGHT = world +X direction
+            # So: x_err (world right) → robot right error
+            #     y_err (world forward) → robot front error (positive = ahead = behind us)
+            fwd_err  = -y_err   # + = need to move FRONT (-Y world)
+            side_err =  x_err   # + = too far right = need to move LEFT
 
-        if dist_err < pos_tol_mm and abs(ang_err) < ang_tol_deg:
-            mc.stop()
-            return True
+            if abs(fwd_err) >= abs(side_err):
+                pwr = _proportional_power(abs(fwd_err), MOVE_GAIN_MM,
+                                          MOVE_POWER_MIN, MOVE_POWER_MAX)
+                d = "FRONT" if fwd_err > 0 else "BACK"
+                mc.send(MoveCmd(cmd="move", direction=d, power=pwr))
+            else:
+                pwr = _proportional_power(abs(side_err), MOVE_GAIN_MM,
+                                          MOVE_POWER_MIN, MOVE_POWER_MAX)
+                d = "LEFT" if side_err > 0 else "RIGHT"
+                mc.send(MoveCmd(cmd="move", direction=d, power=pwr))
 
-        # Transform x/y errors from world frame into robot frame
-        # Robot FRONT = (hdx, hdy), robot RIGHT = (hdy, -hdx)
-        fwd_err  =  x_err * hdx + y_err * hdy    # positive = robot behind target
-        side_err = -x_err * hdy + y_err * hdx    # positive = robot left of target
+        time.sleep(0.04)
+    else:
+        mc.stop()
+        if verbose: print("  [drive_to] TIMEOUT in phase 1.")
+        return False
 
-        # Remap to movement_client convention:
-        #   y_error_mm positive → BACK  (but here fwd_err positive = move FRONT)
-        cmd = compute_move_cmd(
-            x_error_mm    = side_err,     # positive = move RIGHT
-            y_error_mm    = -fwd_err,     # positive = move BACK  (flip sign)
-            ang_error_deg = ang_err,
-        )
-        mc.send(cmd)
-        time.sleep(0.05)
+    mc.send(MoveCmd(cmd="brake"))
+    time.sleep(0.3)
 
-    mc.stop()
-    return False   # timed out
+    # ── Phase 2: Rotate to final heading ─────────────────────────────────
+    if verbose: print(f"  Phase 2: rotating to {final_heading_deg:.1f}°...")
+    rot_t0 = time.time()
+    while time.time() - rot_t0 < 10.0:
+        if not state.initialized:
+            time.sleep(0.05)
+            continue
+        ang_err = _ang_diff(state.heading_deg, final_heading_deg)
+        if abs(ang_err) < ang_tol_deg:
+            break
+        pwr = _proportional_power(abs(ang_err), ROT_GAIN_DEG,
+                                  ROT_POWER_MIN, ROT_POWER_MAX)
+        d = "RIGHT" if ang_err > 0 else "LEFT"
+        mc.send(MoveCmd(cmd="rotate", direction=d, power=pwr))
+        time.sleep(0.04)
+
+    mc.send(MoveCmd(cmd="brake"))
+    time.sleep(0.2)
+
+    if verbose:
+        x, y = state.position_mm
+        print(f"  Arrived: ({x:.0f}, {y:.0f}) heading={state.heading_deg:.1f}°")
+    return True
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# EXAMPLE GAME LOOP  — fill this in with your competition logic
+# AUTOMATIC SCAN — triggers new_main3 to take a photo and run the planner
+# without pressing 's' manually
+# ─────────────────────────────────────────────────────────────────────────────
+def do_scan(image_path: str = "current_scan.jpg",
+            plan_path:  str = "robot_shooting_plan.json") -> dict:
+    """
+    Capture a frame and run the planner automatically.
+    Equivalent to pressing 's' in new_main3.py.
+    Returns the loaded shooting plan dict (may be empty if no balls found).
+    """
+    print("[do_scan] Capturing image and running planner...")
+    # Import here to avoid circular deps
+    import cv2
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__), "robot-vision-and-planning"))
+    from config import CAM_HD_INDEX, HD_SCAN_RESOLUTION
+    if sys.platform.startswith("win"):
+        cap = cv2.VideoCapture(CAM_HD_INDEX, cv2.CAP_DSHOW)
+    else:
+        cap = cv2.VideoCapture(CAM_HD_INDEX, cv2.CAP_V4L2)
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH,  HD_SCAN_RESOLUTION[0])
+    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, HD_SCAN_RESOLUTION[1])
+    for _ in range(5): cap.read(); time.sleep(0.05)
+    ret, frame = cap.read()
+    cap.release()
+    if ret:
+        cv2.imwrite(image_path, frame)
+        print(f"[do_scan] Saved {image_path}")
+    else:
+        print("[do_scan] WARNING: failed to capture frame.")
+        return {}
+
+    vision_dir = os.path.join(os.path.dirname(__file__), "robot-vision-and-planning")
+    planner = os.path.join(vision_dir, "snooker_planner.py")
+    subprocess.run([sys.executable, planner, os.path.abspath(image_path)],
+                   cwd=vision_dir)
+    return load_shooting_plan(plan_path)
+
+
+def do_confirm_shot(zone: str,
+                    plan: dict,
+                    vision_dir: str = None) -> bool:
+    """
+    Automatically write selected_target.json and launch sniper_4k.py.
+    Equivalent to pressing 'c' in new_main3.py.
+    Returns True when sniper exits (shot fired or ESC).
+    """
+    if zone not in plan:
+        print(f"[do_confirm_shot] Zone '{zone}' not in plan.")
+        return False
+    with open("selected_target.json", "w") as f:
+        json.dump(plan[zone], f, indent=2)
+    print(f"[do_confirm_shot] Launching sniper for zone {zone}...")
+    if vision_dir is None:
+        vision_dir = os.path.join(os.path.dirname(__file__), "robot-vision-and-planning")
+    sniper = os.path.join(vision_dir, "sniper_4k.py")
+    result = subprocess.run([sys.executable, sniper], cwd=vision_dir)
+    return result.returncode == 0
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# FULL COMMAND-CHAIN EXAMPLE — tests every available command
+# ─────────────────────────────────────────────────────────────────────────────
+def demo_all_commands(state: RobotState, mc: MovementClient):
+    """
+    Runs through every available command so you can see how each one works.
+    Comment out sections you don't need.
+    """
+    print("\n━━━ DEMO: ALL COMMANDS ━━━")
+
+    # ── 1. Read robot state ───────────────────────────────────────────────
+    print(f"\n[1] Position:    {state.position_mm}")
+    print(f"    Heading:     {state.heading_deg:.1f}°  (vector {state.heading})")
+    print(f"    Tracking:    {state.tracking_state}")
+    print(f"    App state:   {state.app_state}")
+
+    # ── 2. Raw movement commands ──────────────────────────────────────────
+    print("\n[2] Movement commands:")
+    mc.send(MoveCmd(cmd="move", direction="FRONT", power=20)); time.sleep(0.5)
+    mc.send(MoveCmd(cmd="brake")); time.sleep(0.3)
+    mc.send(MoveCmd(cmd="move", direction="BACK",  power=20)); time.sleep(0.5)
+    mc.send(MoveCmd(cmd="brake")); time.sleep(0.3)
+    mc.send(MoveCmd(cmd="move", direction="LEFT",  power=20)); time.sleep(0.5)
+    mc.send(MoveCmd(cmd="brake")); time.sleep(0.3)
+    mc.send(MoveCmd(cmd="move", direction="RIGHT", power=20)); time.sleep(0.5)
+    mc.send(MoveCmd(cmd="brake")); time.sleep(0.3)
+
+    # ── 3. Rotation commands ──────────────────────────────────────────────
+    print("\n[3] Rotation commands:")
+    mc.send(MoveCmd(cmd="rotate", direction="LEFT",  power=15)); time.sleep(0.4)
+    mc.send(MoveCmd(cmd="brake")); time.sleep(0.3)
+    mc.send(MoveCmd(cmd="rotate", direction="RIGHT", power=15)); time.sleep(0.4)
+    mc.send(MoveCmd(cmd="brake")); time.sleep(0.3)
+
+    # ── 4. Stop variants ──────────────────────────────────────────────────
+    print("\n[4] Stop commands:")
+    mc.stop()    # soft stop
+    mc.brake()   # hard brake (motor lock)
+
+    # ── 5. Actions — claw, trigger, spin wheel ────────────────────────────
+    print("\n[5] Actions:")
+    mc.action("open_claw");     time.sleep(0.5)
+    mc.action("close_claw");    time.sleep(0.5)
+    mc.action("rev_spin", power=25); time.sleep(1.0)
+    mc.action("stop_spin");     time.sleep(0.3)
+    mc.action("release_trigger"); time.sleep(0.5)
+    mc.action("reset_trigger");   time.sleep(0.5)
+
+    # ── 6. Proportional move commands via compute_move_cmd ────────────────
+    print("\n[6] compute_move_cmd:")
+    # Positive x_error → robot is too far RIGHT → command LEFT
+    cmd = compute_move_cmd(x_error_mm=80, y_error_mm=0, ang_error_deg=0)
+    print(f"    x=+80mm → {cmd.describe()}")
+    mc.send(cmd); time.sleep(0.3); mc.brake()
+
+    cmd = compute_move_cmd(x_error_mm=0, y_error_mm=-120, ang_error_deg=0)
+    print(f"    y=-120mm → {cmd.describe()}")
+    mc.send(cmd); time.sleep(0.3); mc.brake()
+
+    cmd = compute_move_cmd(x_error_mm=0, y_error_mm=0, ang_error_deg=15)
+    print(f"    ang=+15° → {cmd.describe()}")
+    mc.send(cmd); time.sleep(0.3); mc.brake()
+
+    # ── 7. drive_to ───────────────────────────────────────────────────────
+    print("\n[7] drive_to (example — target = current position + 100mm forward):")
+    x, y = state.position_mm
+    drive_to(x, y - 100, 270.0, state, mc, pos_tol_mm=30)
+
+    # ── 8. Scan table ─────────────────────────────────────────────────────
+    print("\n[8] Scan table:")
+    plan = do_scan()
+    if plan:
+        print(f"    Found zones: {list(plan.keys())}")
+        for zone, info in plan.items():
+            print(f"    {zone}: {info['color']} → {info['target_pocket']}  cut={info['cut_angle_deg']}°")
+    else:
+        print("    No balls detected.")
+
+    # ── 9. Confirm shot (if plan found) ───────────────────────────────────
+    if plan:
+        zone = list(plan.keys())[0]
+        print(f"\n[9] Confirming shot for zone {zone}...")
+        rx, ry = plan[zone]["robot_alignment_xy"]
+        drive_to(rx, ry, plan[zone]["firing_angle_deg"], state, mc)
+        do_confirm_shot(zone, plan)   # launches sniper_4k.py
+
+    print("\n━━━ DEMO COMPLETE ━━━")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# MAIN — your game loop goes here
 # ─────────────────────────────────────────────────────────────────────────────
 def main():
     state = RobotState()
     mc    = MovementClient()
 
-    print("Waiting for vision tracking to initialise...")
+    print("Waiting for vision tracking...")
     wait_for_tracking(state, timeout=15.0)
-    print(f"Tracking OK. Robot at: {state.position_mm}")
 
-    # ── EXAMPLE SEQUENCE — replace with your actual game logic ────────────
+    # ── Run the demo to test every command ───────────────────────────────
+    # demo_all_commands(state, mc)
 
-    # avg_pos = [0, 0]
-    # avg_deg = 0
-    # for i in range(5):
-    #     # print(state.heading)
-    #     position = state.position_mm
-    #     print(position)
-    #     avg_pos[0] += position[0]
-    #     avg_pos[1] += position[1]
-    #     heading_deg = (math.degrees(math.atan2(state.heading[1], state.heading[0])) + 360) % 360
-    #     print(heading_deg)
-    #     avg_deg += heading_deg
-    #     time.sleep(0.5)
-    # avg_pos[0] = avg_pos[0] / 5
-    # avg_pos[1] = avg_pos[1] / 5
-    # avg_deg /= 5
-
-    # print(avg_pos)
-    # print(avg_deg)
-
-    time.sleep(1)
-
-    mc.send(compute_move_cmd(x_error_mm=10, y_error_mm=0, ang_error_deg=0))
-
-    # drive_to(avg_pos[0] + 100, avg_pos[1] - 200, avg_deg, state, mc)
-
+    # ── Example competition loop ─────────────────────────────────────────
+    #
+    # PHOTO_POS_X = 600    # mm — centre of table width
+    # PHOTO_POS_Y = 2375   # mm — robot shoot line
+    # PHOTO_HEAD  = 270.0  # degrees — facing toward all tags
+    #
     # while True:
-    #     position = state.position_mm
-    #     print(position)
-    #     heading_deg = (math.degrees(math.atan2(state.heading[1], state.heading[0])) + 360) % 360
-    #     print(heading_deg)
-    #     time.sleep(0.5)
-
-    # 1. Drive to photo position
-    # drive_to(600, 2375, 90, state, mc)
-    # mc.action('rev_spin', power=30)
-    # time.sleep(1)
-    # mc.action('stop_spin')
-
-    # 2. Trigger ball scan (press 's' in new_main3 window, or call via socket)
-
-    # plan = load_shooting_plan()
-    # print(plan)
-    
-    # 3. Choose which ball to go for
-    #    target_zone = "E"   # or pick based on plan
-    #    shot = plan[target_zone]
+    #     # 1. Drive to photo position
+    #     drive_to(PHOTO_POS_X, PHOTO_POS_Y, PHOTO_HEAD, state, mc)
     #
-    # 4. Drive to alignment position
-    #    rx, ry = shot["robot_alignment_xy"]
-    #    drive_to(rx, ry, shot["firing_angle_deg"], state, mc)
+    #     # 2. Scan table and get plan
+    #     plan = do_scan()
+    #     if not plan:
+    #         print("No balls left — done!")
+    #         break
     #
-    # 5. Switch to sniper (press 'c' in new_main3, or trigger programmatically)
+    #     # 3. Pick which ball to go for (choose yourself or pick first one)
+    #     zone = list(plan.keys())[0]
+    #     shot = plan[zone]
     #
-    # 6. Fire (press 'f' in sniper window, or detect LOCKED state and auto-fire)
+    #     # 4. Rev up spin wheel while navigating
+    #     mc.action("rev_spin", power=25)
     #
-    # 7. Loop back to step 1
+    #     # 5. Drive to alignment position
+    #     rx, ry = shot["robot_alignment_xy"]
+    #     drive_to(rx, ry, shot["firing_angle_deg"], state, mc)
+    #
+    #     # 6. Launch sniper — blocks until shot fired or ESC
+    #     do_confirm_shot(zone, plan)
+    #     mc.action("stop_spin")
+    #
+    #     # 7. Loop back
 
-    print("\nNo game logic implemented yet — add your steps above.")
-    print("Available commands:")
-    print("  mc.send(compute_move_cmd(x_error_mm=..., y_error_mm=..., ang_error_deg=...))")
-    print("  mc.stop() / mc.brake()")
-    print("  mc.action('open_claw') / mc.action('rev_spin', power=30)")
-    print("  drive_to(x_mm, y_mm, heading_deg, state, mc)")
-    print("  plan = load_shooting_plan()")
-
+    mc.stop()
     state.stop()
     mc.close()
 

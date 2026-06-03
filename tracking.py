@@ -75,31 +75,25 @@ def fuse_tag_estimates(estimates, last_x, last_y, initialized,
         dist  = metres to tag
         w     = distance weight (1/dist^3)
 
-    Returns (raw_x, raw_y, raw_dx, raw_dy, sum_dist, n_valid)
-    or None if no valid estimates.
-    """
-    valid = []
-    for e in estimates:
-        gx, gy = e["pose"][0], e["pose"][1]
-        if not (ARENA_BOUNDS[0] - out_of_bounds <= gx <= ARENA_BOUNDS[2] + out_of_bounds and
-                ARENA_BOUNDS[1] - out_of_bounds <= gy <= ARENA_BOUNDS[3] + out_of_bounds):
-            continue
-        if initialized and math.hypot(gx - last_x, gy - last_y) > max_pose_jump:
-            continue
-        valid.append(e)
+    Bounds/jump checks are done by the caller before appending to the list,
+    so this function only applies consensus soft-rejection + weighted average.
 
-    if not valid:
+    Returns (raw_x, raw_y, raw_dx, raw_dy, sum_dist, n_valid) or None.
+    """
+    if not estimates:
         return None
 
     # ── Step 1: distance-weighted initial mean ────────────────────────────
-    tw = sum(e["w"] for e in valid)
-    ix = sum(e["pose"][0] * e["w"] for e in valid) / tw
-    iy = sum(e["pose"][1] * e["w"] for e in valid) / tw
+    tw = sum(e["w"] for e in estimates)
+    if tw < 1e-12:
+        return None
+    ix = sum(e["pose"][0] * e["w"] for e in estimates) / tw
+    iy = sum(e["pose"][1] * e["w"] for e in estimates) / tw
 
     # ── Step 2: consensus soft-rejection ─────────────────────────────────
     total_w = raw_x = raw_y = raw_dx = raw_dy = 0.0
     sum_dist = 0.0
-    for e in valid:
+    for e in estimates:
         dev = math.hypot(e["pose"][0] - ix, e["pose"][1] - iy)
         cw  = math.exp(-dev**2 / (2 * consensus_sigma**2))
         w   = e["w"] * cw
@@ -107,78 +101,116 @@ def fuse_tag_estimates(estimates, last_x, last_y, initialized,
         raw_dx += e["pose"][2] * w;  raw_dy += e["pose"][3] * w
         total_w += w;  sum_dist += e["dist"]
 
+    if total_w < 1e-12:
+        return None
+
     raw_x /= total_w;  raw_y /= total_w
     raw_dx /= total_w; raw_dy /= total_w
     mag = math.hypot(raw_dx, raw_dy)
     if mag > 0: raw_dx /= mag; raw_dy /= mag
 
-    return raw_x, raw_y, raw_dx, raw_dy, sum_dist, len(valid)
+    return raw_x, raw_y, raw_dx, raw_dy, sum_dist, len(estimates)
 
 
-def compute_line_intersections(estimates):
+def _circle_circle_intersect(c1, r1, c2, r2):
     """
-    For each pair of visible tags, compute the ray from the tag toward the
-    camera (i.e. the estimated robot-centre position direction from that tag).
-    Intersect pairs of rays → collect near-intersection points → average,
-    weighted by how perpendicular the rays are.
+    Return up to two intersection points of two circles.
+    c1, c2 = (x, y) centres;  r1, r2 = radii.
+    Returns list of 0, 1, or 2 (x, y) tuples.
+    """
+    x1, y1 = c1;  x2, y2 = c2
+    d = math.hypot(x2 - x1, y2 - y1)
+    if d < 1e-9 or d > r1 + r2 + 1e-6 or d < abs(r1 - r2) - 1e-6:
+        return []
+    a  = (r1**2 - r2**2 + d**2) / (2.0 * d)
+    h2 = r1**2 - a**2
+    if h2 < 0:
+        return []
+    h  = math.sqrt(max(0.0, h2))
+    mx = x1 + a * (x2 - x1) / d
+    my = y1 + a * (y2 - y1) / d
+    px =  h * (y2 - y1) / d
+    py = -h * (x2 - x1) / d
+    if h < 1e-9:
+        return [(mx, my)]
+    return [(mx + px, my + py), (mx - px, my - py)]
 
-    Returns (ix, iy) world-frame intersection estimate, or None.
 
-    Why this helps: each tag gives a ray, not just a point. When two rays
-    from different tags cross (or nearly cross), their intersection is an
-    additional independent position estimate that doesn't depend on per-tag
-    pose estimation accuracy.
+def compute_distance_circles(estimates):
+    """
+    Distance-based position estimate using circle intersections.
+
+    Each tag is at a known world position. The detector returns t_z which
+    is the measured distance from camera to tag. This places the robot on
+    a circle of that radius centred on the tag.
+
+    With two tags we get up to two candidate points; we pick the one inside
+    the arena. With more tags we collect all pair-wise candidates, keep only
+    arena-valid ones, and return their weighted average (weighted by how
+    perpendicular the two circles' normals are — better geometry = lower
+    uncertainty).
+
+    Much more reliable than the old ray-intersection method, which was
+    sensitive to heading estimation errors that are much larger than
+    distance errors.
+
+    Returns (x, y) in metres, or None if not enough data.
     """
     if len(estimates) < 2:
         return None
 
-    # Each estimate gives a ray: origin = tag world position, direction = tag→camera
-    rays = []
+    # Build (tag_world_pos, measured_dist) pairs
+    circles = []
     for e in estimates:
-        tag_id = e["id"]
-        if tag_id not in KNOWN_TAGS:
+        tid = e["id"]
+        if tid not in KNOWN_TAGS:
             continue
-        ti  = KNOWN_TAGS[tag_id]
-        ox, oy = ti["x"], ti["y"]          # ray origin = tag world position
-        # direction = tag → camera = normalised(camera_pos - tag_pos)
-        cx, cy = e["pose"][0], e["pose"][1]
-        dx, dy = cx - ox, cy - oy
-        dist = math.hypot(dx, dy)
-        if dist < 1e-6:
-            continue
-        rays.append({"ox": ox, "oy": oy, "dx": dx/dist, "dy": dy/dist,
-                      "dist": e["dist"]})
+        ti = KNOWN_TAGS[tid]
+        circles.append({
+            "centre": (ti["x"], ti["y"]),
+            "radius": e["dist"],          # t_z converted to dist already in estimate
+        })
 
-    intersections = []
-    weights       = []
-
-    for i in range(len(rays)):
-        for j in range(i+1, len(rays)):
-            r1, r2 = rays[i], rays[j]
-            # Solve: r1.o + t1*r1.d = r2.o + t2*r2.d
-            # [r1.dx, -r2.dx] [t1]   [r2.ox - r1.ox]
-            # [r1.dy, -r2.dy] [t2] = [r2.oy - r1.oy]
-            a = np.array([[r1["dx"], -r2["dx"]],
-                           [r1["dy"], -r2["dy"]]])
-            b = np.array([r2["ox"] - r1["ox"],
-                           r2["oy"] - r1["oy"]])
-            det = a[0,0]*a[1,1] - a[0,1]*a[1,0]
-            if abs(det) < 1e-8:
-                continue   # rays nearly parallel → unreliable
-            t1, t2 = np.linalg.solve(a, b)
-            if t1 < 0 or t2 < 0:
-                continue   # intersection behind a tag
-            ix = r1["ox"] + t1 * r1["dx"]
-            iy = r1["oy"] + t1 * r1["dy"]
-            # Weight by perpendicularity (|sin θ| = |det / (|d1||d2|)|= |det|)
-            perp_w = abs(det)
-            intersections.append((ix, iy))
-            weights.append(perp_w)
-
-    if not intersections:
+    if len(circles) < 2:
         return None
 
-    total_w = sum(weights)
-    fx = sum(ix * w for (ix,_), w in zip(intersections, weights)) / total_w
-    fy = sum(iy * w for (_,iy), w in zip(intersections, weights)) / total_w
+    candidates = []   # (x, y, weight)
+    for i in range(len(circles)):
+        for j in range(i + 1, len(circles)):
+            c1, r1 = circles[i]["centre"], circles[i]["radius"]
+            c2, r2 = circles[j]["centre"], circles[j]["radius"]
+            pts = _circle_circle_intersect(c1, r1, c2, r2)
+            for (px, py) in pts:
+                # Keep only arena-valid candidates
+                if not (ARENA_BOUNDS[0] - HD_OUT_OF_BOUNDS <= px <= ARENA_BOUNDS[2] + HD_OUT_OF_BOUNDS and
+                        ARENA_BOUNDS[1] - HD_OUT_OF_BOUNDS <= py <= ARENA_BOUNDS[3] + HD_OUT_OF_BOUNDS):
+                    continue
+                # Weight by perpendicularity of the two tag normals at this point.
+                # Each normal points from tag centre toward the intersection point.
+                n1x, n1y = px - c1[0], py - c1[1]
+                n2x, n2y = px - c2[0], py - c2[1]
+                m1 = math.hypot(n1x, n1y); m2 = math.hypot(n2x, n2y)
+                if m1 < 1e-9 or m2 < 1e-9:
+                    continue
+                # |sin θ| = |cross product| of unit normals
+                cross = abs(n1x / m1 * n2y / m2 - n1y / m1 * n2x / m2)
+                # Extra weight if the candidate is "in front" of both tags (y > tag_y)
+                # since robots are always at higher y than the tags (tags at y≈0)
+                if py < ARENA_BOUNDS[1]:
+                    continue
+                candidates.append((px, py, cross))
+
+    if not candidates:
+        return None
+
+    total_w = sum(c[2] for c in candidates)
+    if total_w < 1e-12:
+        return None
+
+    fx = sum(c[0] * c[2] for c in candidates) / total_w
+    fy = sum(c[1] * c[2] for c in candidates) / total_w
     return fx, fy
+
+
+# Keep old name as alias so any remaining callers still work
+compute_line_intersections = compute_distance_circles
