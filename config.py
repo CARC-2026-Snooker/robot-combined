@@ -25,9 +25,6 @@ import numpy as np
 SERIAL_PORT = "/dev/ttyUSB0"
 SERIAL_BAUD = 1_000_000
 
-# CAM_HD_INDEX  = 2   # HD webcam (tracking + ball scan)
-# CAM_4K_INDEX  = 1   # 4K sniper camera
-
 CAM_FRONT = "/dev/camera_front"
 CAM_BACK = "/dev/camera_back"
 CAM_4K = "/dev/camera_4k"
@@ -40,6 +37,8 @@ MOVEMENT_HOST      = "127.0.0.1"   # where movement_server runs (same Pi)
 
 TELEMETRY_PORT     = 5005   # vision → anyone   (robot state, position, errors)
 MOVEMENT_CMD_PORT  = 5010   # vision → movement (drive commands)
+BALL_ALIGN_PORT    = 5006   # ball_align.py → mission_controller (pickup alignment)
+VISION_CMD_PORT    = 5007   # mission_controller → new_main3 (trigger scan etc.)
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # FIELD GEOMETRY  (all in metres, origin = Tag 3 / Hole_3 corner)
@@ -75,9 +74,11 @@ POCKET_TO_TAG = {
 # Positive = forward along robot's heading direction.
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 HD_CAM_FORWARD_M  = 0.05    # HD lens is 5cm ahead of robot centre
+# HD_CAM_FORWARD_M  = 0.00    # HD lens is 5cm ahead of robot centre
 HD_CAM_SIDEWAYS_M = 0.00    # lateral offset (positive = robot's right); 0 for now
 
 CAM_4K_FORWARD_M  = 0.20    # 4K lens tip is 20cm ahead of robot centre
+# CAM_4K_FORWARD_M  = 0.00    # 4K lens tip is 20cm ahead of robot centre
 CAM_4K_SIDEWAYS_M = 0.00    # lateral offset; 0 for now
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -85,18 +86,25 @@ CAM_4K_SIDEWAYS_M = 0.00    # lateral offset; 0 for now
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 HD_RESOLUTION   = (1280, 720)    # width × height in pixels
 HD_FPS          = 30
-HD_CAM_PARAMS   = [1924.70, 1924.67, 907.46, 483.50]  # fx, fy, cx, cy at 1080p
+HD_CAM_PARAMS   = [2338.02*0.879595, 2316.26*0.879595, 843.71, 352.60]  # fx, fy, cx, cy at 1080p
 # Scale factor: actual_h / 1080.0 applied at runtime
+
+# HD camera distortion coefficients.
+# Set to None to skip undistortion (fastest, fine if lens is low-distortion).
+# To calibrate: run cv2.calibrateCamera on a chessboard, set to the result.
+# Format: np.array([[k1, k2, p1, p2, k3]]) — same as cv2 convention.
+# HD_CAM_DIST_COEFFS = np.array([[-2.46512311e-01, 4.72856868e+00, -1.40853939e-02, -9.24473134e-03, -1.98916405e+01]])   # e.g. np.array([[-0.35, 0.12, 0.0, 0.0, 0.0]])
+HD_CAM_DIST_COEFFS = None  # e.g. np.array([[-0.35, 0.12, 0.0, 0.0, 0.0]])
 
 # Crop strip removed from top/bottom before detection (fraction of frame height).
 # Reduces area the detector has to search → faster.
-HD_CROP_TOP     = 0.20
-HD_CROP_BOT     = 0.20
+HD_CROP_TOP     = 0.1
+HD_CROP_BOT     = 0.1
 
 # Tracking filter constants — DRIVING mode
 HD_MAX_TAG_DIST     = 10.0    # ignore tags farther than this (metres)
 HD_OUT_OF_BOUNDS    = 0.15    # metres outside arena boundary still accepted
-HD_MAX_POSE_JUMP    = 0.50    # metres; larger jumps discarded as outliers
+HD_MAX_POSE_JUMP    = 0.25    # metres; larger jumps discarded as outliers
 HD_TRACKING_TIMEOUT = 0.30    # seconds without tags → lose tracking
 
 HD_STILL_ALPHA  = 0.005   # low-pass alpha when robot is stationary
@@ -117,7 +125,7 @@ SN_MOVE_THR     = 0.020
 
 # Line-intersection fusion weight (0 = ignore intersection estimate, 1 = use only intersection)
 # The intersection estimate is blended with the pose estimate: final = blend * intersection + (1-blend) * pose
-LINE_INTERSECT_BLEND = 0.0   # 30% from ray-intersection, 70% from per-tag pose
+LINE_INTERSECT_BLEND = 0.95   # 30% from ray-intersection, 70% from per-tag pose
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # HD CAMERA — BALL DETECTION (main.py, used for scanning)
@@ -149,10 +157,9 @@ HD_BALL_PERCENT_THRESHOLD = 0.05
 # 4K CAMERA
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 CAM_4K_RESOLUTION = (3840, 2160)   # set lower for Pi performance; was 3840×2160
-CAM_4K_PARAMS     = [4534.22, 4528.08, 979.27, 775.85]  # fx, fy, cx, cy at 1080p
+CAM_4K_PARAMS     = [2189.67, 2166.18, 989.41, 736.70]  # fx, fy, cx, cy at 1080p
 CAM_4K_DIST_COEFFS = np.array(
-    [[-1.23467127e+00, 1.37940482e+01,
-      -2.47010796e-02, 6.62621201e-03, -1.51346017e+02]]
+    [[0.26176172, -1.26840109, 0.01521634, 0.01708042, 2.2519771]]
 )
 
 # Ball colour masks used in the 4K sniper view
@@ -175,6 +182,7 @@ ANGLE_LOCK_DEG = 0.3
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 DETECT_EVERY_N_FRAMES = 1    # AprilTag detection runs every N HD frames (1=every frame)
 DISPLAY_SCALE         = 0.5 # Scale display windows (1.0=full, 0.5=half)
+# DISPLAY_SCALE         = 0.7 # Scale display windows (1.0=full, 0.5=half)
 
 HD_BRIGHTNESS_BOOST   = 1.0  # 1.0=off; increase if image is dark after low-exposure tuning
 
@@ -182,14 +190,14 @@ HD_BRIGHTNESS_BOOST   = 1.0  # 1.0=off; increase if image is dark after low-expo
 # MOVEMENT — proportional speed control
 # Power range: 0–100 (passed directly to Robot.Move / Robot.Rotate)
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-MOVE_POWER_MIN  = 15    # slowest movement power (near target)
-MOVE_POWER_MAX  = 30    # fastest movement power (far from target)
+MOVE_POWER_MIN  = 10    # slowest movement power (near target)
+MOVE_POWER_MAX  = 200    # fastest movement power (far from target)
 
-ROT_POWER_MIN   = 15    # slowest rotation power
-ROT_POWER_MAX   = 30    # fastest rotation power
+ROT_POWER_MIN   = 10    # slowest rotation power
+ROT_POWER_MAX   = 80    # fastest rotation power
 
 # Proportional gain: power = clamp(|error| * gain, MIN, MAX)
-MOVE_GAIN_MM    = 0.4   # power per mm of position error   (e.g. 50mm → power 20)
+MOVE_GAIN_MM    = 1.3   # power per mm of position error   (e.g. 50mm → power 20)
 ROT_GAIN_DEG    = 1.0   # power per degree of angle error  (e.g. 10° → power 10)
 
 # Dead zones — stop commanding movement below these errors
@@ -207,7 +215,8 @@ ROBOT_SIZE_MM      = 450
 ROBOT_HALF_MM      = ROBOT_SIZE_MM / 2.0
 ROBOT_X_MIN        = ROBOT_HALF_MM + 20
 ROBOT_X_MAX        = TABLE_WIDTH_MM - ROBOT_HALF_MM - 20
-ROBOT_SHOOT_Y      = 2100 + ROBOT_HALF_MM + 50   # mm
+# ROBOT_SHOOT_Y      = 2100 + ROBOT_HALF_MM + 50   # mm
+ROBOT_SHOOT_Y      = 2450   # mm
 
 # Corner pocket offset — shifts aim point inward to avoid clipping the side wall.
 # Must match in both snooker_planner.py and sniper_4k.py.

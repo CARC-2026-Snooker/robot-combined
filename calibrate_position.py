@@ -1,0 +1,393 @@
+"""
+calibrate_position.py — Interactive robot position calibration.
+
+Usage:
+  1. Run new_main3.py (tracking must be live)
+  2. Run this script
+  3. Place the robot at each listed position, press ENTER to record
+  4. The script fits a linear correction and saves calibration.json
+  5. new_main3.py auto-loads calibration.json on start
+
+How it works:
+  The tracker gives high-precision but potentially offset/scaled readings.
+  We record (predicted, true) pairs at known physical positions,
+  then fit per-axis linear transforms:
+
+    x_corrected = scale_x * x_raw + offset_x
+    y_corrected = scale_y * y_raw + offset_y
+    heading_corrected = heading_raw + heading_offset_deg
+
+  These coefficients are saved to calibration.json and loaded by new_main3.py.
+
+Calibration point types:
+  "x"    — only X is recorded (robot Y doesn't need to be exact)
+  "y"    — only Y is recorded (robot X doesn't need to be exact)
+  "xy"   — both X and Y recorded (robot must be precisely placed)
+
+  You need at least 2 "x" (or "xy") points to calibrate X,
+  and at least 2 "y" (or "xy") points to calibrate Y.
+  With only 1 point per axis, scale is assumed 1.0 (offset-only correction).
+"""
+
+import sys, os, json, math, time, socket, threading
+import numpy as np
+
+sys.path.insert(0, os.path.dirname(__file__))
+from config import TELEMETRY_PORT, ARENA_BOUNDS
+
+CAL_FILE = os.path.join(os.path.dirname(__file__), "calibration.json")
+
+# ─────────────────────────────────────────────────────────────────────────────
+# DEFINE YOUR CALIBRATION POINTS HERE
+# Each entry: (true_x_mm, true_y_mm, axes, label)
+#   true_x_mm / true_y_mm: the ACTUAL measured position in mm (world frame)
+#   axes: "x", "y", or "xy" — which axes to record at this point
+#   label: human-readable description of where to place the robot
+#
+# Use physical landmarks: table edges, tape marks, pocket centres, etc.
+# You only need the axis you're recording to be precise; the other can be approximate.
+# ─────────────────────────────────────────────────────────────────────────────
+CALIBRATION_POINTS = [
+    # (true_x_mm, true_y_mm, axes, description, heading(optional,default=270))
+
+    # assuming wheel to wheel = 28cm > dis to middle = 14
+    # straight points
+    (140,  3460, "xyh", "bottom left"),
+    (600,  3460, "yh",  "bottom just middle somewhere"),
+    (1060, 3460, "xyh", "bottom right"),
+    (375,  3375, "xh",  "left start tape middle somewhere"),
+    (825,  3375, "xh",  "right start tape middle somewhere"),
+    (375,  3150, "xyh",  "top left start tape"),
+    (600,  3150, "yh",  "top middle start tape somewhere"),
+    (825,  3150, "xyh",  "top right start tape"),
+    (140,  2640, "xyh", "top inner black left"),
+    (600,  2640, "yh",  "top inner black just middle somewhere"),
+    (1060, 2640, "xyh",  "top inner black right"),
+    (180,  2100, "xyh", "top white left"),
+    (600,  2100, "yh",  "top white just middle somewhere"),
+    (1020, 2100, "xyh",  "top white right"),
+
+    # angled points
+    # (140,  3460, "xyh", "bottom left", 300.0),
+    # (1060, 3460, "xyh", "bottom right", 240.0),
+    # (375,  3150, "xyh",  "top left start tape, looking left", 255.0),
+    # (375,  3150, "xyh",  "top left start tape, looking right", 290.0),
+    # (825,  3150, "xyh",  "top right start tape, looking left", 250.0),
+    # (825,  3150, "xyh",  "top right start tape, looking right", 285.0),
+    # (140,  2640, "xyh", "top inner black left", 300.0),
+    # (1060, 2640, "xyh",  "top inner black right", 240.0),
+    # (180,  2100, "xyh", "top white left", 300.0),
+    # (1020, 2100, "xyh",  "top white right", 240.0),
+]
+
+# Optional: record a heading at each point where axes includes "h"
+# e.g. (600, 2450, "xyh", "Centre, facing 270°") — robot must face exactly 270°
+# heading_true_deg is always the expected heading at that point (usually 270°)
+HEADING_POINTS = [
+    # (true_heading_deg, description)
+    # Add entries here if you want to calibrate heading offset
+    # (270.0, "straight, in the middle"),
+    # (300.0, "bottom left, looking right"),
+    # (300.0, "top left, looking right"),
+    # (240.0, "bottom right, looking left"),
+    # (240.0, "top right, looking left"),
+]
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# TELEMETRY READER  (same as RobotState in mission_controller)
+# ─────────────────────────────────────────────────────────────────────────────
+class _TelReader:
+    def __init__(self):
+        self._sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self._sock.bind(("0.0.0.0", TELEMETRY_PORT))
+        self._sock.settimeout(0.1)
+        self._data = {}
+        self._lock = threading.Lock()
+        self._running = True
+        threading.Thread(target=self._run, daemon=True).start()
+
+    def _run(self):
+        while self._running:
+            try:
+                raw, _ = self._sock.recvfrom(4096)
+                with self._lock:
+                    self._data = json.loads(raw.decode())
+            except (socket.timeout, json.JSONDecodeError):
+                pass
+
+    def get(self):
+        with self._lock:
+            return dict(self._data)
+
+    def stop(self):
+        self._running = False
+        self._sock.close()
+
+
+def _wait_for_stable(reader, samples=20, interval=0.15):
+    """Collect multiple telemetry readings and return their average.
+    Waits until tracking is initialised."""
+    print("  Waiting for stable tracking...", end="", flush=True)
+    while True:
+        d = reader.get()
+        if d.get("initialized") and d.get("state") in ("STILL", "TRANSITIONING"):
+            break
+        print(".", end="", flush=True)
+        time.sleep(0.2)
+    print()
+
+    readings_x, readings_y, readings_hdx, readings_hdy = [], [], [], []
+    for _ in range(samples):
+        d = reader.get()
+        readings_x.append(d.get("x_mm", 0.0))
+        readings_y.append(d.get("y_mm", 0.0))
+        readings_hdx.append(d.get("heading_dx", 1.0))
+        readings_hdy.append(d.get("heading_dy", 0.0))
+        time.sleep(interval)
+
+    return {
+        "x_mm":  float(np.mean(readings_x)),
+        "y_mm":  float(np.mean(readings_y)),
+        "x_std": float(np.std(readings_x)),
+        "y_std": float(np.std(readings_y)),
+        "heading_deg": float((math.degrees(math.atan2(
+            np.mean(readings_hdy), np.mean(readings_hdx))) + 360) % 360),
+    }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# FIT CALIBRATION
+# ─────────────────────────────────────────────────────────────────────────────
+def _fit_axis(pred_vals, true_vals):
+    """
+    Fit true = scale * pred + offset by least squares.
+    With 1 point: assume scale=1, return offset only.
+    With 2+ points: full linear regression.
+    Returns (scale, offset_m, rms_mm).
+    """
+    pred = np.array(pred_vals, dtype=float)  # metres
+    true = np.array(true_vals, dtype=float)  # metres
+
+    if len(pred) == 1:
+        scale  = 1.0
+        offset = true[0] - pred[0]
+        rms    = 0.0
+    else:
+        A = np.column_stack([pred, np.ones(len(pred))])
+        (scale, offset), *_ = np.linalg.lstsq(A, true, rcond=None)
+        residuals = scale * pred + offset - true
+        rms = float(np.sqrt(np.mean(residuals**2)))
+
+    return float(scale), float(offset), rms * 1000.0  # rms in mm
+
+
+def fit_calibration(records):
+    """
+    Fit calibration from a list of measurement records.
+    Returns a calibration dict ready to save as calibration.json.
+
+    X/Y: linear scale + offset (least squares).
+    Heading: IDW correction map — one (x_mm, y_mm, correction_deg) point
+             per heading measurement. Position-dependent, interpolated at runtime.
+    """
+    pred_x, true_x = [], []
+    pred_y, true_y = [], []
+
+    for r in records:
+        axes = r["axes"]
+        if "x" in axes:
+            pred_x.append(r["pred_x_mm"] / 1000.0)
+            true_x.append(r["true_x_mm"] / 1000.0)
+        if "y" in axes:
+            pred_y.append(r["pred_y_mm"] / 1000.0)
+            true_y.append(r["true_y_mm"] / 1000.0)
+
+    cal = {
+        "scale_x": 1.0, "offset_x_m": 0.0, "rms_x_mm": 0.0,
+        "scale_y": 1.0, "offset_y_m": 0.0, "rms_y_mm": 0.0,
+        "heading_idw_points": [],
+        "heading_idw_power": 2,
+        "heading_idw_fallback_deg": 0.0,
+        "n_x": len(pred_x), "n_y": len(pred_y), "n_heading": 0,
+    }
+
+    if pred_x:
+        cal["scale_x"], cal["offset_x_m"], cal["rms_x_mm"] = _fit_axis(pred_x, true_x)
+    if pred_y:
+        cal["scale_y"], cal["offset_y_m"], cal["rms_y_mm"] = _fit_axis(pred_y, true_y)
+
+    # Build IDW heading map: one point per 'h' record
+    idw_pts = []
+    for r in records:
+        if 'h' not in r.get('axes', ''):
+            continue
+        if 'true_heading_deg' not in r:
+            continue
+        # Use best available position for this point
+        if 'xy' in r['axes']:
+            x_mm, y_mm = r['true_x_mm'], r['true_y_mm']
+        elif 'y' in r['axes']:
+            x_mm, y_mm = r['pred_x_mm'], r['true_y_mm']
+        else:
+            x_mm, y_mm = r['pred_x_mm'], r['pred_y_mm']
+        corr = r['true_heading_deg'] - r['pred_heading_deg']
+        while corr >  180: corr -= 360
+        while corr < -180: corr += 360
+        idw_pts.append({"x_mm": float(x_mm), "y_mm": float(y_mm),
+                         "correction_deg": float(corr)})
+
+    if idw_pts:
+        cal["heading_idw_points"]       = idw_pts
+        cal["heading_idw_fallback_deg"] = float(np.mean([p["correction_deg"] for p in idw_pts]))
+        cal["n_heading"]                = len(idw_pts)
+
+    return cal
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# MAIN CALIBRATION LOOP
+# ─────────────────────────────────────────────────────────────────────────────
+def main():
+    print()
+    print("╔══════════════════════════════════════════════════════════╗")
+    print("║         CARC 2026 — Robot Position Calibration          ║")
+    print("╚══════════════════════════════════════════════════════════╝")
+    print()
+    print("Make sure new_main3.py is running and tracking is active.")
+    print()
+
+    reader = _TelReader()
+    time.sleep(0.5)   # let socket settle
+
+    records = []
+
+    # ── Position calibration points ──────────────────────────────────────
+    for i, point in enumerate(CALIBRATION_POINTS):
+        true_x, true_y, axes, label, *rest = point
+        true_heading = rest[0] if rest else 270.0
+
+        print(f"── Point {i+1}/{len(CALIBRATION_POINTS)} ──────────────────────────────")
+        print(f"  Position: X={true_x:.0f}mm, Y={true_y:.0f}mm  (axes: {axes})")
+        print(f"  Task    : {label}")
+        print()
+
+        # Show which axes matter
+        if axes == "x":
+            print("  ► X position must be exact. Y can be approximate.")
+        elif axes == "y":
+            print("  ► Y position must be exact. X can be approximate.")
+        elif "xy" in axes:
+            print("  ► Both X and Y must be exactly at the stated position.")
+        if "h" in axes:
+            print(f"  ► heading must be exactly {true_heading} degrees")
+
+        input("  Place robot now, then press ENTER to record... ")
+
+        reading = _wait_for_stable(reader)
+        print(f"  Recorded: pred=({reading['x_mm']:.1f}, {reading['y_mm']:.1f})mm  "
+              f"heading={reading['heading_deg']:.1f}°  "
+              f"std=({reading['x_std']:.1f}, {reading['y_std']:.1f})mm")
+
+        if reading["x_std"] > 30 or reading["y_std"] > 30:
+            print(f"  ⚠  High noise (std > 30mm). Consider re-recording.")
+            redo = input("  Re-record this point? [y/N] ").strip().lower()
+            if redo == "y":
+                reading = _wait_for_stable(reader)
+                print(f"  Re-recorded: pred=({reading['x_mm']:.1f}, {reading['y_mm']:.1f})mm")
+
+        record = {
+            "axes":       axes,
+            "true_x_mm":  float(true_x),
+            "true_y_mm":  float(true_y),
+            "pred_x_mm":  reading["x_mm"],
+            "pred_y_mm":  reading["y_mm"],
+            "pred_heading_deg": reading["heading_deg"],
+        }
+        if "h" in axes:
+            record["true_heading_deg"] = true_heading
+        records.append(record)
+        print()
+
+    # ── Heading calibration points (optional) ────────────────────────────
+    for i, (true_heading, label) in enumerate(HEADING_POINTS):
+        print(f"── Heading point {i+1}/{len(HEADING_POINTS)} ─────────────────────────")
+        print(f"  True heading: {true_heading:.1f}°")
+        print(f"  Task        : {label}")
+        input("  Align robot now, then press ENTER to record... ")
+        reading = _wait_for_stable(reader)
+        print(f"  Recorded heading: {reading['heading_deg']:.2f}°")
+        diff = true_heading - reading["heading_deg"]
+        while diff >  180: diff -= 360
+        while diff < -180: diff += 360
+        records.append({"axes": "h",
+                         "true_heading_deg": true_heading,
+                         "pred_heading_deg": reading["heading_deg"],
+                         "true_x_mm": 0, "true_y_mm": 0,
+                         "pred_x_mm": reading["x_mm"], "pred_y_mm": reading["y_mm"]})
+        print()
+
+    # ── Fit calibration ───────────────────────────────────────────────────
+    print("═" * 60)
+    print("Fitting calibration...")
+    cal = fit_calibration(records)
+
+    print()
+    print("  X axis:")
+    print(f"    scale  = {cal['scale_x']:.5f}")
+    print(f"    offset = {cal['offset_x_m']*1000:+.1f} mm")
+    print(f"    RMS    = {cal['rms_x_mm']:.1f} mm  (from {cal['n_x']} points)")
+    print()
+    print("  Y axis:")
+    print(f"    scale  = {cal['scale_y']:.5f}")
+    print(f"    offset = {cal['offset_y_m']*1000:+.1f} mm")
+    print(f"    RMS    = {cal['rms_y_mm']:.1f} mm  (from {cal['n_y']} points)")
+    print()
+    if "n_heading" in cal and cal["n_heading"] > 0:
+        print("  Heading (IDW position-dependent correction):")
+        print(f"    {cal['n_heading']} calibration points")
+        print(f"    Fallback (mean) correction: {cal['heading_idw_fallback_deg']:+.3f}°")
+        corrs = [p['correction_deg'] for p in cal['heading_idw_points']]
+        print(f"    Range: {min(corrs):+.2f}°  to  {max(corrs):+.2f}°")
+    else:
+        print("  Heading: no calibration points recorded")
+    print()
+
+    # Preview correction on each recorded point
+    print("  Correction preview:")
+    print(f"  {'axes':<4} {'raw (x,y)':>14} {'corrected':>14} {'true':>14} {'error':>12}")
+    for r in records:
+        if "x" not in r["axes"] and "y" not in r["axes"]:
+            continue
+        px, py = r["pred_x_mm"]/1000, r["pred_y_mm"]/1000
+        cx = cal["scale_x"] * px + cal["offset_x_m"]
+        cy = cal["scale_y"] * py + cal["offset_y_m"]
+        err_x = cx*1000 - r["true_x_mm"] if "x" in r["axes"] else float("nan")
+        err_y = cy*1000 - r["true_y_mm"] if "y" in r["axes"] else float("nan")
+        raw_str  = f"({r['pred_x_mm']:.0f}, {r['pred_y_mm']:.0f})"
+        cor_str  = f"({cx*1000:.0f}, {cy*1000:.0f})"
+        true_str = f"({r['true_x_mm']:.0f}, {r['true_y_mm']:.0f})"
+        err_str  = f"{err_x:+.0f}/{err_y:+.0f}mm"
+        print(f"  {r['axes']:<4} {raw_str:>14} {cor_str:>14} {true_str:>14} {err_str:>12}")
+    print()
+
+    # ── Save ──────────────────────────────────────────────────────────────
+    cal["records"] = records
+    cal["timestamp"] = time.strftime("%Y-%m-%d %H:%M:%S")
+
+    with open(CAL_FILE, "w") as f:
+        json.dump(cal, f, indent=2)
+    print(f"  Saved to: {CAL_FILE}")
+    print()
+    print("  new_main3.py will load this automatically on next start.")
+    print("  To disable: delete calibration.json or set all scales=1, offsets=0.")
+    print()
+    print("╔══════════════════════════════════════════════════════════╗")
+    print("║                  Calibration complete!                  ║")
+    print("╚══════════════════════════════════════════════════════════╝")
+
+    reader.stop()
+
+
+if __name__ == "__main__":
+    main()

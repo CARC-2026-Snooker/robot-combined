@@ -1,0 +1,172 @@
+{
+  "scale_x": 0.9755471436510729,
+  "offset_x_m": 0.09692619066022592,
+  "rms_x_mm": 11.020752907102525,
+  "scale_y": 1.039251523643609,
+  "offset_y_m": -0.08810212683246677,
+  "rms_y_mm": 5.112221537852441,
+  "n_x": 4,
+  "n_y": 6,
+  "records": [
+    {
+      "axes": "xyh",
+      "true_x_mm": 170.0,
+      "true_y_mm": 3430.0,
+      "pred_x_mm": 79.135,
+      "pred_y_mm": 3382.935,
+      "pred_heading_deg": 272.96473587700143,
+      "true_heading_deg": 270.0
+    },
+    {
+      "axes": "xyh",
+      "true_x_mm": 1030.0,
+      "true_y_mm": 3430.0,
+      "pred_x_mm": 940.695,
+      "pred_y_mm": 3383.7950000000005,
+      "pred_heading_deg": 270.55002258704695,
+      "true_heading_deg": 270.0
+    },
+    {
+      "axes": "xyh",
+      "true_x_mm": 170.0,
+      "true_y_mm": 2570.0,
+      "pred_x_mm": 71.255,
+      "pred_y_mm": 2556.5350000000003,
+      "pred_heading_deg": 271.8569402463728,
+      "true_heading_deg": 270.0
+    },
+    {
+      "axes": "xyh",
+      "true_x_mm": 1030.0,
+      "true_y_mm": 2570.0,
+      "pred_x_mm": 971.65,
+      "pred_y_mm": 2566.2250000000004,
+      "pred_heading_deg": 267.2749152225095,
+      "true_heading_deg": 270.0
+    },
+    {
+      "axes": "yh",
+      "true_x_mm": 600.0,
+      "true_y_mm": 2570.0,
+      "pred_x_mm": 560.8,
+      "pred_y_mm": 2550.54,
+      "pred_heading_deg": 273.78644827217613,
+      "true_heading_deg": 270.0
+    },
+    {
+      "axes": "yh",
+      "true_x_mm": 600.0,
+      "true_y_mm": 3430.0,
+      "pred_x_mm": 491.79499999999996,
+      "pred_y_mm": 3388.775,
+      "pred_heading_deg": 271.4922175765164,
+      "true_heading_deg": 270.0
+    },
+    {
+      "axes": "h",
+      "true_heading_deg": 270.0,
+      "pred_heading_deg": 269.23228250277594,
+      "true_x_mm": 0,
+      "true_y_mm": 0,
+      "pred_x_mm": 525.7550000000001,
+      "pred_y_mm": 3037.9449999999997
+    },
+    {
+      "axes": "h",
+      "true_heading_deg": 300.0,
+      "pred_heading_deg": 296.0845543948075,
+      "true_x_mm": 0,
+      "true_y_mm": 0,
+      "pred_x_mm": 329.83000000000004,
+      "pred_y_mm": 2673.7999999999997
+    },
+    {
+      "axes": "h",
+      "true_heading_deg": 300.0,
+      "pred_heading_deg": 294.6456988144273,
+      "true_x_mm": 0,
+      "true_y_mm": 0,
+      "pred_x_mm": 259.06000000000006,
+      "pred_y_mm": 3337.2799999999997
+    },
+    {
+      "axes": "h",
+      "true_heading_deg": 240.0,
+      "pred_heading_deg": 236.5927859769576,
+      "true_x_mm": 0,
+      "true_y_mm": 0,
+      "pred_x_mm": 844.595,
+      "pred_y_mm": 3454.649999999999
+    },
+    {
+      "axes": "h",
+      "true_heading_deg": 240.0,
+      "pred_heading_deg": 237.06716783808642,
+      "true_x_mm": 0,
+      "true_y_mm": 0,
+      "pred_x_mm": 855.8700000000001,
+      "pred_y_mm": 2754.245
+    }
+  ],
+  "timestamp": "2026-06-04 22:10:23",
+  "heading_idw_points": [
+    {
+      "x_mm": 170.0,
+      "y_mm": 3430.0,
+      "correction_deg": -2.9647358770014307
+    },
+    {
+      "x_mm": 1030.0,
+      "y_mm": 3430.0,
+      "correction_deg": -0.5500225870469535
+    },
+    {
+      "x_mm": 170.0,
+      "y_mm": 2570.0,
+      "correction_deg": -1.856940246372801
+    },
+    {
+      "x_mm": 1030.0,
+      "y_mm": 2570.0,
+      "correction_deg": 2.7250847774905083
+    },
+    {
+      "x_mm": 560.8,
+      "y_mm": 2570.0,
+      "correction_deg": -3.7864482721761306
+    },
+    {
+      "x_mm": 491.79499999999996,
+      "y_mm": 3430.0,
+      "correction_deg": -1.4922175765163956
+    },
+    {
+      "x_mm": 525.7550000000001,
+      "y_mm": 3037.9449999999997,
+      "correction_deg": 0.767717497224055
+    },
+    {
+      "x_mm": 329.83000000000004,
+      "y_mm": 2673.7999999999997,
+      "correction_deg": 3.915445605192474
+    },
+    {
+      "x_mm": 259.06000000000006,
+      "y_mm": 3337.2799999999997,
+      "correction_deg": 5.3543011855726945
+    },
+    {
+      "x_mm": 844.595,
+      "y_mm": 3454.649999999999,
+      "correction_deg": 3.4072140230423997
+    },
+    {
+      "x_mm": 855.8700000000001,
+      "y_mm": 2754.245,
+      "correction_deg": 2.9328321619135806
+    }
+  ],
+  "heading_idw_power": 2,
+  "heading_idw_fallback_deg": 0.7683846083020001,
+  "n_heading": 11
+}
