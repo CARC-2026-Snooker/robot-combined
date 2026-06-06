@@ -15,7 +15,7 @@ import sys, os, time, json, math, subprocess, socket, threading
 sys.path.insert(0, os.path.dirname(__file__))
 
 from config import (
-    TELEMETRY_PORT, MOVE_DEAD_MM, ROT_DEAD_DEG,
+    TELEMETRY_PORT, SNIPER_TELEMETRY_PORT, SNIPER_FIRE_PORT, MOVE_DEAD_MM, ROT_DEAD_DEG,
     REAL_ZONES, MOVE_POWER_MIN, MOVE_POWER_MAX,
     ROT_POWER_MIN, ROT_POWER_MAX,
     MOVE_GAIN_MM, ROT_GAIN_DEG,
@@ -24,7 +24,7 @@ from config import (
 from movement_client import (
     MovementClient, MoveCmd,
     world_errors_to_omni, omni, move, rotate_by, brake, stop, action,
-    compute_move_cmd,   # legacy alias still available
+    compute_move_cmd, _clamp_power  # legacy alias still available
 )
 
 sys.path.append("/home/page/Carc2026/robot-vision-and-planning")
@@ -196,7 +196,7 @@ class SniperState:
       .tracking_state   → "STILL"|"MOVING"|"LOST"
     """
 
-    def __init__(self, port: int = TELEMETRY_PORT):
+    def __init__(self, port: int = SNIPER_TELEMETRY_PORT):
         self._sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self._sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self._sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
@@ -210,17 +210,17 @@ class SniperState:
     def _listen(self):
         while self._running:
             try:
-                raw, _ = self._sock.recvfrom(8192)
+                raw, addr = self._sock.recvfrom(8192)
                 data = json.loads(raw.decode())
                 with self._lock:
                     self._data = data
-
+                    print(f"[SniperState DEBUG] Received | init={data.get('initialized')} | "
+                          f"x_err={data.get('x_error_mm')} | y_err={data.get('y_error_mm')} | "
+                          f"state={data.get('state')} | fully_locked={data.get('fully_locked')}")
             except (socket.timeout, json.JSONDecodeError):
                 pass
-
-            except OSError:
-                # socket was closed during shutdown
-                break
+            except Exception as e:
+                print(f"[SniperState ERROR] {e}")
 
     def get(self) -> dict:
         with self._lock:
@@ -294,34 +294,134 @@ class SniperState:
 
 
 def wait_for_sniper_lock(sniper: SniperState,
+                         mc: MovementClient,
                          timeout: float = 30.0,
                          verbose: bool = True) -> bool:
     """
-    Block until the sniper reports fully_locked, or timeout.
-    Returns True if locked, False if timed out.
-    Use this when you want mission_controller to wait for aiming to complete
-    before doing something (e.g. auto-firing a mechanism) instead of pressing 'f'.
+    Actively nudge the robot until the sniper reaches full lock.
 
-    Note: sniper_4k.py still requires 'f' to actually fire the mechanism.
-    This function tells you WHEN the shot is ready, not triggers the fire itself.
-    For fully autonomous firing, add an auto-fire feature to sniper_4k.py.
+    Uses a pulse → brake → settle cycle to avoid overshoot:
+      1. Read error from sniper telemetry
+      2. If correction needed: send a SHORT low-power pulse (PULSE_MS)
+      3. Brake immediately
+      4. Wait for the robot to stop and the camera/filter to catch up (SETTLE_MS)
+      5. Re-read and repeat
+
+    Power is deliberately capped much lower than drive_to (max 20 vs 200)
+    because the lock tolerance is 0.3° / ~10px — any fast motion overshoots it.
     """
+    # ── Fine-aiming power limits ─────────────────────────────────────────────
+    # These override ROT_POWER_MAX/MOVE_POWER_MAX (which are for coarse driving).
+    # Keep these LOW — the lock tolerance is tiny (0.3°, ~10px, ~5mm).
+    FINE_ROT_MIN   = 5    # minimum rotation power
+    FINE_ROT_MAX   = 25    # maximum rotation power — DO NOT raise above ~25
+    FINE_MOVE_MIN  = 5    # minimum translation power
+    FINE_MOVE_MAX  = 25    # maximum translation power — DO NOT raise above ~25
+
+    ANG_FULL_DEG   = 8.0   # degrees where power reaches FINE_ROT_MAX
+    LAT_FULL_MM    = 25.0  # mm where power reaches FINE_MOVE_MAX
+    POS_FULL_MM    = 35.0  # mm (CUT mode) where power reaches FINE_MOVE_MAX
+
+    # ── Pulse / settle timing ────────────────────────────────────────────────
+    # PULSE_S: how long to run motors before braking.
+    # SETTLE_S: how long to wait after braking before reading the next error.
+    # Longer settle = more accurate reading but slower convergence.
+    PULSE_S        = 0.05   # 80ms pulse — short enough to not overshoot
+    SETTLE_S       = 0.10   # 200ms settle — camera updates + robot stops
+
     t0 = time.time()
     last_print = 0.0
+
     while time.time() - t0 < timeout:
         if sniper.fully_locked:
+            mc.brake()
             if verbose:
-                print(f"[wait_for_sniper_lock] LOCKED after {time.time()-t0:.1f}s")
+                print(f"[sniper] LOCKED after {time.time()-t0:.1f}s")
             return True
-        if verbose and time.time() - last_print > 2.0:
-            d = sniper.get()
-            ang = d.get('ang_correction_deg')
-            lat = d.get('lateral_mm')
-            ang_str = "OK" if d.get('ang_locked') else (f"{ang:+.2f}°" if ang is not None else "searching")
-            lat_str = "OK" if d.get('lat_locked') else (f"{lat:+.1f}mm" if lat is not None else "n/a")
-            print(f"  sniper: mode={d.get('shot_mode','?')}  ang={ang_str}  lat={lat_str}  pos={'LOCKED' if d.get('pos_locked') else 'waiting'}")
+
+        d = sniper.get()
+        if not d:
+            time.sleep(0.05)
+            continue
+
+        mode        = d.get("shot_mode", "STRAIGHT")
+        initialized = d.get("initialized", False)
+        ang_corr    = d.get("ang_correction_deg")
+        tag_found   = d.get("tag_found_4k", False)
+        ang_locked  = d.get("ang_locked", False)
+        lat_mm      = d.get("lateral_mm")
+        lat_locked  = d.get("lat_locked", False)
+        x_err       = d.get("x_error_mm", 999.0)
+        y_err       = d.get("y_error_mm", 999.0)
+
+        vX = vY = vR = 0
+
+        if mode == "STRAIGHT":
+            if tag_found and not ang_locked and ang_corr is not None:
+                rot_spd = _clamp_power(abs(ang_corr), ANG_FULL_DEG,
+                                       FINE_ROT_MIN, FINE_ROT_MAX, ROT_DEAD_DEG)
+                vR = rot_spd if ang_corr > 0 else -rot_spd
+
+            if ang_locked and lat_mm is not None and not lat_locked:
+                lat_spd = _clamp_power(abs(lat_mm), LAT_FULL_MM,
+                                       FINE_MOVE_MIN, FINE_MOVE_MAX, MOVE_DEAD_MM)
+                vX = lat_spd if lat_mm > 0 else -lat_spd
+
+        else:
+            # CUT mode
+            if tag_found and ang_corr is not None:
+                rot_spd = _clamp_power(abs(ang_corr), ANG_FULL_DEG,
+                                       FINE_ROT_MIN, FINE_ROT_MAX, ROT_DEAD_DEG)
+                vR = rot_spd if ang_corr > 0 else -rot_spd
+
+            if initialized:
+                dist_mm = math.hypot(x_err, y_err)
+                if dist_mm > MOVE_DEAD_MM:
+                    trans_spd = _clamp_power(dist_mm, POS_FULL_MM,
+                                             FINE_MOVE_MIN, FINE_MOVE_MAX, MOVE_DEAD_MM)
+                    hd = d.get("heading_dx", 0.0)
+                    hy = d.get("heading_dy", -1.0)
+                    heading_deg = (math.degrees(math.atan2(hy, hd)) + 360) % 360
+                    h = math.radians(heading_deg)
+                    raw_vX =  x_err * math.sin(h) - y_err * math.cos(h)
+                    raw_vY = -x_err * math.cos(h) - y_err * math.sin(h)
+                    mag = math.hypot(raw_vX, raw_vY)
+                    if mag > 1e-9:
+                        vX = int(round(raw_vX / mag * trans_spd))
+                        vY = int(round(raw_vY / mag * trans_spd))
+
+        if verbose and time.time() - last_print > 1.0:
+            ang_str = f"{ang_corr:+.2f}°" if ang_corr is not None else "searching"
+            lat_str = f"{lat_mm:+.1f}mm" if lat_mm is not None else "n/a"
+            print(
+                f"  sniper: mode={mode} "
+                f"hd={'OK' if initialized else 'wait'} "
+                f"tag={'FOUND' if tag_found else 'search'} "
+                f"ang={'OK' if ang_locked else ang_str} "
+                f"lat={'OK' if lat_locked else lat_str} "
+                f"x={x_err:+.1f} y={y_err:+.1f} "
+                f"{'LOCKED' if d.get('pos_locked') else 'waiting'} "
+                f"cmd=({vX:+d},{vY:+d},{vR:+d})"
+            )
             last_print = time.time()
-        time.sleep(0.05)
+
+        if vX == 0 and vY == 0 and vR == 0:
+            # Nothing to correct — coast and check again soon
+            time.sleep(0.05)
+            continue
+
+        # ── Pulse → brake → settle ───────────────────────────────────────────
+        mc.send(MoveCmd(cmd="omni", vX=vX, vY=vY, vR=vR))
+        time.sleep(PULSE_S)    # run for a short burst
+        mc.brake()             # stop immediately
+        time.sleep(SETTLE_S)   # wait for robot to stop + camera to catch up
+
+    mc.brake()
+    if verbose:
+        print(f"[wait_for_sniper_lock] TIMEOUT after {timeout:.0f}s")
+    return False
+
+    mc.brake()
     if verbose:
         print(f"[wait_for_sniper_lock] TIMEOUT after {timeout:.0f}s")
     return False
@@ -640,63 +740,7 @@ def demo_all_commands(state: RobotState, mc: MovementClient):
     print(f"    x=+80 y=-80 ang=+5° at 275° → {cmd.describe()}")
     mc.send(cmd); time.sleep(0.4); mc.brake()
 
-    # ── 8. Scan table ─────────────────────────────────────────────────────
-    print("\n[8] Scan table:")
-    plan = do_scan()
-    if plan:
-        print(f"    Found zones: {list(plan.keys())}")
-        for zone, info in plan.items():
-            print(f"    {zone}: {info['color']} → {info['target_pocket']}  cut={info['cut_angle_deg']}°")
-    else:
-        print("    No balls detected.")
-
-    # ── 9. Confirm shot (if plan found) — with SniperState monitoring ────────
-    if plan:
-        zone = list(plan.keys())[0]
-
-        # Create a SniperState BEFORE launching the sniper so it's ready to receive
-        sniper = SniperState()
-        time.sleep(0.1)   # give the socket a moment to bind
-
-        # Launch sniper in a background thread so we can monitor it here
-        import threading as _th
-        sniper_done = [False]
-        def _run_sniper():
-            do_confirm_shot(zone, plan)
-            sniper_done[0] = True
-        _th.Thread(target=_run_sniper, daemon=True).start()
-
-        # Wait for sniper to start broadcasting
-        print("    Waiting for sniper to initialise...")
-        for _ in range(50):   # up to 5s
-            if sniper.active: break
-            time.sleep(0.1)
-
-        if sniper.active:
-            print(f"    Sniper active!  mode={sniper.shot_mode}  target={sniper.target_pocket}")
-            # Monitor in real time until locked or sniper exits
-            while not sniper_done[0]:
-                d = sniper.get()
-                ang = d.get("ang_correction_deg")
-                lat = d.get("lateral_mm")
-                print(
-                    f"    tag={'FOUND' if d.get('tag_found_4k') else 'SEARCHING'}  "
-                    f"angle={f'{ang:+.2f}°' if ang is not None else '---'}  "
-                    f"{'ANGLE_OK' if d.get('ang_locked') else ''}  "
-                    f"lateral={f'{lat:+.1f}mm' if lat is not None else 'n/a'}  "
-                    f"{'LAT_OK' if d.get('lat_locked') else ''}  "
-                    f"{'⟵ FULLY LOCKED — press f' if d.get('fully_locked') else ''}"
-                )
-                if d.get("fully_locked"):
-                    print("    >>> LOCKED! Robot can fire now (press f in sniper window)")
-                time.sleep(0.5)
-        else:
-            print("    Sniper did not broadcast (check TELEMETRY_PORT binding).")
-
-        sniper.stop()
-
     print("\n━━━ DEMO COMPLETE ━━━")
-
 
 # ─────────────────────────────────────────────────────────────────────────────
 # MAIN — your game loop goes here
@@ -704,134 +748,156 @@ def demo_all_commands(state: RobotState, mc: MovementClient):
 def main():
     global _GLOBAL_MC
 
-    state = RobotState()
+    state = RobotState(TELEMETRY_PORT)
     mc    = MovementClient()
     _GLOBAL_MC = mc
 
+    white_balls = [2,2]
+    last_side = 0 # left:0 right:1
+
+    # demo_all_commands(state, mc)
+
+    # actual thing starts here, so we dont have to manually open the stuff beforehand
+    # init/start all the programs n stuff
+    
+    # go to left side infront of white balls pedestal
+    mc.omni(vX=-30, vY=-190, vR=-200)
+    time.sleep(1.9)
+    mc.brake()
+
     try:
-        # print("Waiting for vision tracking...")
-        # wait_for_tracking(state, timeout=15.0)
+        while True:
 
-        # demo_all_commands(state, mc)
+            do_pickup_sequence(mc)
+            white_balls[last_side] = white_balls[last_side] - 1
 
-        # actual thing starts here, so we dont have to manually open the stuff beforehand
-        # init/start all the programs n stuff
-
-        # start going
-        mc.action("close_claw")
-
-        # get a ball from left side
-        # mc.omni(vX=-100, vY=-270, vR=-260)
-        mc.omni(vX=-30, vY=-190, vR=-200)
-        # time.sleep(1.5)
-        time.sleep(1.9)
-        mc.brake()
-
-        do_pickup_sequence(mc)
-
-        # go back to middle and align to view point
-        mc.omni(vX=-100, vY=300, vR=-200)
-        time.sleep(1.8)
-        mc.brake()
-
-        PHOTO_POS_X, PHOTO_POS_Y, PHOTO_HEAD = 600, 2400, 270.0
-        drive_to(PHOTO_POS_X, PHOTO_POS_Y, PHOTO_HEAD, state, mc, pos_tol_mm=20.0, ang_tol_deg=1.0)
-
-        # take a capture of the view and get plan
-        plan = do_scan()
-        if not plan:
-            print("No balls left — done!")
-            return
-        else:
-            print(plan)
-
-        # pick what ball/zone to go for
-
-        # go for red first then blue
-        zones = list(plan.values())
-        red_zones = [z for z in zones if z["color"] == "Red"]
-
-        if red_zones:
-            color_filtered_zones = red_zones
-        else:
-            color_filtered_zones = zones
-        
-        # for the picked color: go for middle > corner straights > the rest (back 4)
-        color_filtered_zones = [zone["target_ball_zone"] for zone in color_filtered_zones]
-        print(color_filtered_zones)
-
-        if 'E' in color_filtered_zones:
-            picked_zone = 'E'
-
-        elif 'A' in color_filtered_zones or 'B' in color_filtered_zones:
-            ab_zones = [z for z in color_filtered_zones if z in ('A', 'B')]
-            picked_zone = random.choice(ab_zones)
-
-        else:
-            picked_zone = random.choice(color_filtered_zones) # TODO: need to switch it to pick the lowest/least cut angle
-
-        shot = plan[picked_zone]
-        print(f"\n[9] Shooting zone {picked_zone} ({shot['color']} → {shot['target_pocket']})")
-
-        # Drive to coarse alignment position
-        rx, ry = shot["robot_alignment_xy"]
-        drive_to(rx, ry, shot["firing_angle_deg"], state, mc)
-
-        # Create SniperState BEFORE sending confirm_shot (so socket is bound and ready)
-        sniper_st = SniperState()
-        time.sleep(0.1)
-
-        # Send confirm_shot to new_main3 in a background thread.
-        # new_main3 will: release its HD camera → run sniper_4k.py → reply when done.
-        # We run it in a thread so we can simultaneously monitor SniperState telemetry.
-        sniper_done = [False]
-        def _run_sniper():
-            do_confirm_shot(picked_zone, plan)
-            sniper_done[0] = True
-        threading.Thread(target=_run_sniper, daemon=True).start()
-
-        # Wait for sniper to start broadcasting telemetry (up to 10s)
-        print("    Waiting for sniper to initialise...")
-        for _ in range(100):
-            if sniper_st.active: break
-            time.sleep(0.1)
-
-        if not sniper_st.active:
-            print("    Sniper did not start — aborting.")
-            sniper_st.stop()
-        else:
-            print(f"    Sniper active: mode={sniper_st.shot_mode}  target={sniper_st.target_pocket}")
-
-            # Wait for full lock (angle + position both satisfied)
-            locked = wait_for_sniper_lock(sniper_st, timeout=30.0)
-
-            if locked:
-                # Send fire command to sniper_4k — equivalent to pressing 'f'
-                _fire_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-                _fire_sock.sendto(
-                    json.dumps({"cmd": "fire"}).encode(),
-                    ("127.0.0.1", VISION_CMD_PORT)
-                )
-                _fire_sock.close()
-
-                # Fire mechanism — spin starts AFTER lock, no vibration during aiming
-                mc.action("rev_spin_speed", 40)
-                time.sleep(1)
-                mc.action("release_trigger")
-                time.sleep(2)
-                mc.action("reset_trigger")
-                mc.action("stop_spin_speed")
-                print("    Shot fired!")
+            # go back to middle and align to view point
+            if last_side == 0:
+                mc.omni(vX=-100, vY=300, vR=-200)
             else:
-                print("    Lock timed out — skipping shot.")
-                mc.action("stop_spin_speed")
+                mc.omni(vX=100, vY=300, vR=200)
+            time.sleep(1.75)
+            mc.brake()
 
-        # Wait for sniper to finish (new_main3 reply received) before cleaning up
-        for _ in range(50):
-            if sniper_done[0]: break
+            PHOTO_POS_X, PHOTO_POS_Y, PHOTO_HEAD = 600, 2360, 270.0
+            drive_to(PHOTO_POS_X, PHOTO_POS_Y, PHOTO_HEAD, state, mc, pos_tol_mm=10.0, ang_tol_deg=1.0)
+
+            # take a capture of the view and get plan
+            plan = do_scan()
+            if not plan:
+                print("No balls left — done!")
+                return
+            else:
+                print(plan)
+
+            # pick what ball/zone to go for
+
+            # go for red first then blue
+            zones = list(plan.values())
+            red_zones = [z for z in zones if z["color"] == "Red"]
+
+            if red_zones:
+                color_filtered_zones = red_zones
+            else:
+                color_filtered_zones = zones
+            
+            # for the picked color: go for middle > corner straights > the rest (back 4)
+            color_filtered_zones = [zone["target_ball_zone"] for zone in color_filtered_zones]
+            print(color_filtered_zones)
+
+            if 'E' in color_filtered_zones:
+                picked_zone = 'E'
+
+            elif 'A' in color_filtered_zones or 'B' in color_filtered_zones:
+                ab_zones = [z for z in color_filtered_zones if z in ('A', 'B')]
+                picked_zone = random.choice(ab_zones)
+
+            else:
+                picked_zone = random.choice(color_filtered_zones) # TODO: need to switch it to pick the lowest/least cut angle
+
+            shot = plan[picked_zone]
+            print(f"\n[9] Shooting zone {picked_zone} ({shot['color']} → {shot['target_pocket']})")
+
+            # Drive to coarse alignment position
+            rx, ry = shot["robot_alignment_xy"]
+            drive_to(rx, ry, shot["firing_angle_deg"], state, mc)
+
+            mc.brake()
+            time.sleep(0.3)
+
+            # Create SniperState BEFORE sending confirm_shot (so socket is bound and ready)
+            sniper_st = SniperState(SNIPER_TELEMETRY_PORT)
             time.sleep(0.1)
-        sniper_st.stop()
 
+            # Send confirm_shot to new_main3 in a background thread.
+            # new_main3 will: release its HD camera → run sniper_4k.py → reply when done.
+            # We run it in a thread so we can simultaneously monitor SniperState telemetry.
+            sniper_done = [False]
+            def _run_sniper():
+                do_confirm_shot(picked_zone, plan)
+                sniper_done[0] = True
+            threading.Thread(target=_run_sniper, daemon=True).start()
+
+            # Wait for sniper to start broadcasting telemetry (up to 10s)
+            print("    Waiting for sniper to initialise...")
+            for _ in range(100):
+                mc.brake()   # keep it pinned still
+                if sniper_st.active: break
+                time.sleep(0.1)
+
+            if not sniper_st.active:
+                print("    Sniper did not start — aborting.")
+                sniper_st.stop()
+            else:
+                print(f"    Sniper active: mode={sniper_st.shot_mode}  target={sniper_st.target_pocket}")
+
+                # Wait for full lock (angle + position both satisfied)
+                locked = wait_for_sniper_lock(sniper_st, mc, timeout=60.0)
+
+                if locked:
+                    # Send fire command to sniper_4k — equivalent to pressing 'f'
+                    _fire_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+                    _fire_sock.sendto(
+                        json.dumps({"cmd": "fire"}).encode(),
+                        ("127.0.0.1", SNIPER_FIRE_PORT)
+                    )
+                    _fire_sock.close()
+
+                    # Fire mechanism — spin starts AFTER lock, no vibration during aiming
+                    mc.action("rev_spin_speed", 200)
+                    time.sleep(2)
+                    mc.action("release_trigger")
+                    time.sleep(2)
+                    mc.action("reset_trigger")
+                    mc.action("stop_spin_speed")
+                    print("    Shot fired!")
+                else:
+                    print("    Lock timed out — skipping shot.")
+                    mc.action("stop_spin_speed")
+
+            # Wait for sniper to finish (new_main3 reply received) before cleaning up
+            for _ in range(50):
+                if sniper_done[0]: break
+                time.sleep(0.1)
+            sniper_st.stop()
+
+            is_all_zero = all(x == 0 for x in white_balls)
+            if is_all_zero:
+                break
+
+            # go to between the two sides, left first, then right
+            drive_to(600, 3100, PHOTO_HEAD, state, mc, pos_tol_mm=20.0, ang_tol_deg=1.0) # 3080
+            if white_balls[0]: # if still have left do left, else right
+                mc.omni(vX=-30, vY=-190, vR=200)
+                last_side = 0
+            else:
+                mc.omni(vX=30, vY=-190, vR=-200)
+                last_side = 1
+            time.sleep(1.9)
+            mc.brake()
+
+        drive_to(600, 3375, PHOTO_HEAD, state, mc, pos_tol_mm=20.0, ang_tol_deg=1.0)
+        
     except Exception as e:
         print(e)
         traceback.print_exc()

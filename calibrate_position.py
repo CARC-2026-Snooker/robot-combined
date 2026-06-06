@@ -263,7 +263,10 @@ def main():
     records = []
 
     # ── Position calibration points ──────────────────────────────────────
-    for i, point in enumerate(CALIBRATION_POINTS):
+    i = 0
+
+    while i < len(CALIBRATION_POINTS):
+        point = CALIBRATION_POINTS[i]
         true_x, true_y, axes, label, *rest = point
         true_heading = rest[0] if rest else 270.0
 
@@ -279,53 +282,148 @@ def main():
             print("  ► Y position must be exact. X can be approximate.")
         elif "xy" in axes:
             print("  ► Both X and Y must be exactly at the stated position.")
+
         if "h" in axes:
             print(f"  ► heading must be exactly {true_heading} degrees")
 
-        input("  Place robot now, then press ENTER to record... ")
-
-        reading = _wait_for_stable(reader)
-        print(f"  Recorded: pred=({reading['x_mm']:.1f}, {reading['y_mm']:.1f})mm  "
-              f"heading={reading['heading_deg']:.1f}°  "
-              f"std=({reading['x_std']:.1f}, {reading['y_std']:.1f})mm")
-
-        if reading["x_std"] > 30 or reading["y_std"] > 30:
-            print(f"  ⚠  High noise (std > 30mm). Consider re-recording.")
-            redo = input("  Re-record this point? [y/N] ").strip().lower()
-            if redo == "y":
-                reading = _wait_for_stable(reader)
-                print(f"  Re-recorded: pred=({reading['x_mm']:.1f}, {reading['y_mm']:.1f})mm")
-
-        record = {
-            "axes":       axes,
-            "true_x_mm":  float(true_x),
-            "true_y_mm":  float(true_y),
-            "pred_x_mm":  reading["x_mm"],
-            "pred_y_mm":  reading["y_mm"],
-            "pred_heading_deg": reading["heading_deg"],
-        }
-        if "h" in axes:
-            record["true_heading_deg"] = true_heading
-        records.append(record)
         print()
 
+        cmd = input(
+            "  Place robot now.\n"
+            "  [ENTER=record, S=skip, B=go back one point] "
+        ).strip().lower()
+
+        # ── Skip point ───────────────────────────────────────────────────
+        if cmd == "s":
+            print("  Skipped.\n")
+            i += 1
+            continue
+
+        # ── Go back one point ────────────────────────────────────────────
+        if cmd == "b":
+            if i == 0:
+                print("  Already at the first point.\n")
+                continue
+
+            i -= 1
+
+            if records:
+                removed = records.pop()
+
+                removed_desc = (
+                    f"({removed['true_x_mm']:.0f}, "
+                    f"{removed['true_y_mm']:.0f})"
+                )
+
+                print(f"  Removed previous recording {removed_desc}")
+                print(f"  Returning to Point {i+1}.\n")
+            else:
+                print("  No recorded point to remove.\n")
+
+            continue
+
+        # ── Record point ─────────────────────────────────────────────────
+        reading = _wait_for_stable(reader)
+
+        print(
+            f"  Recorded: pred=({reading['x_mm']:.1f}, "
+            f"{reading['y_mm']:.1f})mm  "
+            f"heading={reading['heading_deg']:.1f}°  "
+            f"std=({reading['x_std']:.1f}, "
+            f"{reading['y_std']:.1f})mm"
+        )
+
+        if reading["x_std"] > 30 or reading["y_std"] > 30:
+            print("  ⚠  High noise (std > 30mm). Consider re-recording.")
+            redo = input("  Re-record this point? [y/N] ").strip().lower()
+
+            if redo == "y":
+                reading = _wait_for_stable(reader)
+                print(
+                    f"  Re-recorded: pred=({reading['x_mm']:.1f}, "
+                    f"{reading['y_mm']:.1f})mm"
+                )
+
+        record = {
+            "axes": axes,
+            "true_x_mm": float(true_x),
+            "true_y_mm": float(true_y),
+            "pred_x_mm": reading["x_mm"],
+            "pred_y_mm": reading["y_mm"],
+            "pred_heading_deg": reading["heading_deg"],
+        }
+
+        if "h" in axes:
+            record["true_heading_deg"] = true_heading
+
+        records.append(record)
+
+        print()
+        i += 1
+
     # ── Heading calibration points (optional) ────────────────────────────
-    for i, (true_heading, label) in enumerate(HEADING_POINTS):
+    i = 0
+
+    while i < len(HEADING_POINTS):
+        true_heading, label = HEADING_POINTS[i]
+
         print(f"── Heading point {i+1}/{len(HEADING_POINTS)} ─────────────────────────")
         print(f"  True heading: {true_heading:.1f}°")
         print(f"  Task        : {label}")
-        input("  Align robot now, then press ENTER to record... ")
-        reading = _wait_for_stable(reader)
-        print(f"  Recorded heading: {reading['heading_deg']:.2f}°")
-        diff = true_heading - reading["heading_deg"]
-        while diff >  180: diff -= 360
-        while diff < -180: diff += 360
-        records.append({"axes": "h",
-                         "true_heading_deg": true_heading,
-                         "pred_heading_deg": reading["heading_deg"],
-                         "true_x_mm": 0, "true_y_mm": 0,
-                         "pred_x_mm": reading["x_mm"], "pred_y_mm": reading["y_mm"]})
         print()
+
+        cmd = input(
+            "  Align robot now.\n"
+            "  [ENTER=record, S=skip, B=go back one point] "
+        ).strip().lower()
+
+        # ── Skip ─────────────────────────────────────────────────────────
+        if cmd == "s":
+            print("  Skipped.\n")
+            i += 1
+            continue
+
+        # ── Go back ──────────────────────────────────────────────────────
+        if cmd == "b":
+            if i == 0:
+                print("  Already at the first heading point.\n")
+                continue
+
+            i -= 1
+
+            # Remove last heading record
+            for idx in range(len(records) - 1, -1, -1):
+                if records[idx].get("axes") == "h":
+                    records.pop(idx)
+                    print(f"  Removed previous heading recording.")
+                    break
+
+            print(f"  Returning to Heading Point {i+1}.\n")
+            continue
+
+        # ── Record ───────────────────────────────────────────────────────
+        reading = _wait_for_stable(reader)
+
+        print(f"  Recorded heading: {reading['heading_deg']:.2f}°")
+
+        diff = true_heading - reading["heading_deg"]
+        while diff > 180:
+            diff -= 360
+        while diff < -180:
+            diff += 360
+
+        records.append({
+            "axes": "h",
+            "true_heading_deg": true_heading,
+            "pred_heading_deg": reading["heading_deg"],
+            "true_x_mm": 0,
+            "true_y_mm": 0,
+            "pred_x_mm": reading["x_mm"],
+            "pred_y_mm": reading["y_mm"]
+        })
+
+        print()
+        i += 1
 
     # ── Fit calibration ───────────────────────────────────────────────────
     print("═" * 60)

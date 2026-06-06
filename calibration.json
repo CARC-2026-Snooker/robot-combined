@@ -1,214 +1,214 @@
 {
-  "scale_x": 1.0879821638995277,
-  "offset_x_m": 0.030615414344820777,
-  "rms_x_mm": 27.72927163963897,
-  "scale_y": 1.1348594720103393,
-  "offset_y_m": -0.3182793911172842,
-  "rms_y_mm": 35.50057133232345,
+  "scale_x": 1.0255764941778394,
+  "offset_x_m": 0.0574787519801236,
+  "rms_x_mm": 21.40815047320089,
+  "scale_y": 1.0287240046159165,
+  "offset_y_m": 0.0005818115806593602,
+  "rms_y_mm": 12.993122013625133,
   "heading_idw_points": [
     {
       "x_mm": 140.0,
       "y_mm": 3460.0,
-      "correction_deg": 1.8999999999999773
+      "correction_deg": 1.7707612491050782
     },
     {
-      "x_mm": 483.5,
+      "x_mm": 529.7700000000001,
       "y_mm": 3460.0,
-      "correction_deg": 0.10000000000002274
+      "correction_deg": 0.8822852613211012
     },
     {
       "x_mm": 1060.0,
       "y_mm": 3460.0,
-      "correction_deg": 0.8000000000000114
+      "correction_deg": 0.24923506883965274
+    },
+    {
+      "x_mm": 284.41999999999996,
+      "y_mm": 3277.1,
+      "correction_deg": 0.9853902426733612
+    },
+    {
+      "x_mm": 768.0650000000002,
+      "y_mm": 3280.6449999999995,
+      "correction_deg": 1.7906263927953887
     },
     {
       "x_mm": 375.0,
-      "y_mm": 3274.8,
-      "correction_deg": 0.6999999999999886
-    },
-    {
-      "x_mm": 825.0,
-      "y_mm": 3267.4,
-      "correction_deg": 4.199999999999989
-    },
-    {
-      "x_mm": 375.0,
       "y_mm": 3150.0,
-      "correction_deg": -0.8999999999999773
+      "correction_deg": 1.7421259563921012
     },
     {
-      "x_mm": 525.0,
+      "x_mm": 522.475,
       "y_mm": 3150.0,
-      "correction_deg": 0.6000000000000227
+      "correction_deg": 1.7441175693340938
     },
     {
       "x_mm": 825.0,
       "y_mm": 3150.0,
-      "correction_deg": -0.5
+      "correction_deg": 0.7161599454703946
     },
     {
       "x_mm": 140.0,
       "y_mm": 2640.0,
-      "correction_deg": 3.3999999999999773
+      "correction_deg": 1.1487413221834117
     },
     {
-      "x_mm": 514.9,
+      "x_mm": 540.0000000000001,
       "y_mm": 2640.0,
-      "correction_deg": -1.1999999999999886
+      "correction_deg": -0.36382330987214573
     },
     {
       "x_mm": 1060.0,
       "y_mm": 2640.0,
-      "correction_deg": 0.5
+      "correction_deg": 2.66785858509013
     },
     {
       "x_mm": 180.0,
       "y_mm": 2100.0,
-      "correction_deg": -0.39999999999997726
+      "correction_deg": 0.9882541819158632
     },
     {
-      "x_mm": 527.7,
+      "x_mm": 530.6600000000001,
       "y_mm": 2100.0,
-      "correction_deg": -1.6999999999999886
+      "correction_deg": -2.1580002462568473
     },
     {
       "x_mm": 1020.0,
       "y_mm": 2100.0,
-      "correction_deg": -1.1000000000000227
+      "correction_deg": 0.6388214691544363
     }
   ],
   "heading_idw_power": 2,
-  "heading_idw_fallback_deg": 0.45714285714285957,
+  "heading_idw_fallback_deg": 0.9144681205818586,
   "n_x": 10,
   "n_y": 12,
   "n_heading": 14,
   "records": [
     {
       "axes": "xyh",
-      "true_x_mm": 140,
-      "true_y_mm": 3460,
-      "pred_x_mm": 127.3,
-      "pred_y_mm": 3359.8,
-      "pred_heading_deg": 268.1,
+      "true_x_mm": 140.0,
+      "true_y_mm": 3460.0,
+      "pred_x_mm": 101.315,
+      "pred_y_mm": 3369.995,
+      "pred_heading_deg": 268.2292387508949,
       "true_heading_deg": 270.0
     },
     {
       "axes": "yh",
-      "true_x_mm": 600,
-      "true_y_mm": 3460,
-      "pred_x_mm": 483.5,
-      "pred_y_mm": 3356.8,
-      "pred_heading_deg": 269.9,
+      "true_x_mm": 600.0,
+      "true_y_mm": 3460.0,
+      "pred_x_mm": 529.7700000000001,
+      "pred_y_mm": 3375.325,
+      "pred_heading_deg": 269.1177147386789,
       "true_heading_deg": 270.0
     },
     {
       "axes": "xyh",
-      "true_x_mm": 1060,
-      "true_y_mm": 3460,
-      "pred_x_mm": 891.0,
-      "pred_y_mm": 3362.3,
-      "pred_heading_deg": 269.2,
+      "true_x_mm": 1060.0,
+      "true_y_mm": 3460.0,
+      "pred_x_mm": 937.9200000000001,
+      "pred_y_mm": 3372.815,
+      "pred_heading_deg": 269.75076493116035,
       "true_heading_deg": 270.0
     },
     {
       "axes": "xh",
-      "true_x_mm": 375,
-      "true_y_mm": 3375,
-      "pred_x_mm": 282.8,
-      "pred_y_mm": 3274.8,
-      "pred_heading_deg": 269.3,
+      "true_x_mm": 375.0,
+      "true_y_mm": 3375.0,
+      "pred_x_mm": 284.41999999999996,
+      "pred_y_mm": 3277.1,
+      "pred_heading_deg": 269.01460975732664,
       "true_heading_deg": 270.0
     },
     {
       "axes": "xh",
-      "true_x_mm": 825,
-      "true_y_mm": 3375,
-      "pred_x_mm": 746.0,
-      "pred_y_mm": 3267.4,
-      "pred_heading_deg": 265.8,
+      "true_x_mm": 825.0,
+      "true_y_mm": 3375.0,
+      "pred_x_mm": 768.0650000000002,
+      "pred_y_mm": 3280.6449999999995,
+      "pred_heading_deg": 268.2093736072046,
       "true_heading_deg": 270.0
     },
     {
       "axes": "xyh",
-      "true_x_mm": 375,
-      "true_y_mm": 3150,
-      "pred_x_mm": 324.6,
-      "pred_y_mm": 3034.0,
-      "pred_heading_deg": 270.9,
+      "true_x_mm": 375.0,
+      "true_y_mm": 3150.0,
+      "pred_x_mm": 287.90999999999997,
+      "pred_y_mm": 3050.65,
+      "pred_heading_deg": 268.2578740436079,
       "true_heading_deg": 270.0
     },
     {
       "axes": "yh",
-      "true_x_mm": 600,
-      "true_y_mm": 3150,
-      "pred_x_mm": 525.0,
-      "pred_y_mm": 3031.9,
-      "pred_heading_deg": 269.4,
+      "true_x_mm": 600.0,
+      "true_y_mm": 3150.0,
+      "pred_x_mm": 522.475,
+      "pred_y_mm": 3038.52,
+      "pred_heading_deg": 268.2558824306659,
       "true_heading_deg": 270.0
     },
     {
       "axes": "xyh",
-      "true_x_mm": 825,
-      "true_y_mm": 3150,
-      "pred_x_mm": 729.6,
-      "pred_y_mm": 3029.1,
-      "pred_heading_deg": 270.5,
+      "true_x_mm": 825.0,
+      "true_y_mm": 3150.0,
+      "pred_x_mm": 749.585,
+      "pred_y_mm": 3038.1750000000006,
+      "pred_heading_deg": 269.2838400545296,
       "true_heading_deg": 270.0
     },
     {
       "axes": "xyh",
-      "true_x_mm": 140,
-      "true_y_mm": 2640,
-      "pred_x_mm": 85.2,
-      "pred_y_mm": 2568.4,
-      "pred_heading_deg": 266.6,
+      "true_x_mm": 140.0,
+      "true_y_mm": 2640.0,
+      "pred_x_mm": 82.195,
+      "pred_y_mm": 2578.9299999999994,
+      "pred_heading_deg": 268.8512586778166,
       "true_heading_deg": 270.0
     },
     {
       "axes": "yh",
-      "true_x_mm": 600,
-      "true_y_mm": 2640,
-      "pred_x_mm": 514.9,
-      "pred_y_mm": 2569.7,
-      "pred_heading_deg": 271.2,
+      "true_x_mm": 600.0,
+      "true_y_mm": 2640.0,
+      "pred_x_mm": 540.0000000000001,
+      "pred_y_mm": 2574.17,
+      "pred_heading_deg": 270.36382330987215,
       "true_heading_deg": 270.0
     },
     {
       "axes": "xyh",
-      "true_x_mm": 1060,
-      "true_y_mm": 2640,
-      "pred_x_mm": 967.5,
-      "pred_y_mm": 2570.9,
-      "pred_heading_deg": 269.5,
+      "true_x_mm": 1060.0,
+      "true_y_mm": 2640.0,
+      "pred_x_mm": 1003.7599999999999,
+      "pred_y_mm": 2576.73,
+      "pred_heading_deg": 267.33214141490987,
       "true_heading_deg": 270.0
     },
     {
       "axes": "xyh",
-      "true_x_mm": 180,
-      "true_y_mm": 2100,
-      "pred_x_mm": 148.3,
-      "pred_y_mm": 2170.2,
-      "pred_heading_deg": 270.4,
+      "true_x_mm": 180.0,
+      "true_y_mm": 2100.0,
+      "pred_x_mm": 131.63499999999996,
+      "pred_y_mm": 2042.4850000000001,
+      "pred_heading_deg": 269.01174581808414,
       "true_heading_deg": 270.0
     },
     {
       "axes": "yh",
-      "true_x_mm": 600,
-      "true_y_mm": 2100,
-      "pred_x_mm": 527.7,
-      "pred_y_mm": 2160.8,
-      "pred_heading_deg": 271.7,
+      "true_x_mm": 600.0,
+      "true_y_mm": 2100.0,
+      "pred_x_mm": 530.6600000000001,
+      "pred_y_mm": 2040.895,
+      "pred_heading_deg": 272.15800024625685,
       "true_heading_deg": 270.0
     },
     {
       "axes": "xyh",
-      "true_x_mm": 1020,
-      "true_y_mm": 2100,
-      "pred_x_mm": 931.1,
-      "pred_y_mm": 2155.3,
-      "pred_heading_deg": 271.1,
+      "true_x_mm": 1020.0,
+      "true_y_mm": 2100.0,
+      "pred_x_mm": 943.1099999999999,
+      "pred_y_mm": 2033.7799999999995,
+      "pred_heading_deg": 269.36117853084556,
       "true_heading_deg": 270.0
     }
   ],
-  "timestamp": "2026-06-06 (reconstructed from terminal output)"
+  "timestamp": "2026-06-06 23:08:55"
 }

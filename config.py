@@ -22,7 +22,7 @@ import numpy as np
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # HARDWARE
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-SERIAL_PORT = "/dev/ttyUSB0"
+SERIAL_PORT = "/dev/motor_controller"
 SERIAL_BAUD = 1_000_000
 
 CAM_FRONT = "/dev/camera_front"
@@ -35,10 +35,13 @@ CAM_4K = "/dev/camera_4k"
 VISION_HOST        = "127.0.0.1"   # where vision code runs
 MOVEMENT_HOST      = "127.0.0.1"   # where movement_server runs (same Pi)
 
-TELEMETRY_PORT     = 5005   # vision → anyone   (robot state, position, errors)
+# config.py
+SNIPER_TELEMETRY_PORT = 5004
+TELEMETRY_PORT = 5005
 MOVEMENT_CMD_PORT  = 5010   # vision → movement (drive commands)
 BALL_ALIGN_PORT    = 5006   # ball_align.py → mission_controller (pickup alignment)
 VISION_CMD_PORT    = 5007   # mission_controller → new_main3 (trigger scan etc.)
+SNIPER_FIRE_PORT = 5008
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # FIELD GEOMETRY  (all in metres, origin = Tag 3 / Hole_3 corner)
@@ -156,7 +159,8 @@ HD_BALL_PERCENT_THRESHOLD = 0.05
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # 4K CAMERA
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-CAM_4K_RESOLUTION = (3840, 2160)   # set lower for Pi performance; was 3840×2160
+# CAM_4K_RESOLUTION = (3840, 2160)   # set lower for Pi performance; was 3840×2160
+CAM_4K_RESOLUTION = (2560, 1440)   # set lower for Pi performance; was 3840×2160
 CAM_4K_PARAMS     = [2189.67, 2166.18, 989.41, 736.70]  # fx, fy, cx, cy at 1080p
 CAM_4K_DIST_COEFFS = np.array(
     [[0.26176172, -1.26840109, 0.01521634, 0.01708042, 2.2519771]]
@@ -213,8 +217,8 @@ TABLE_LENGTH_MM    = 3600
 
 ROBOT_SIZE_MM      = 450
 ROBOT_HALF_MM      = ROBOT_SIZE_MM / 2.0
-ROBOT_X_MIN        = ROBOT_HALF_MM + 20
-ROBOT_X_MAX        = TABLE_WIDTH_MM - ROBOT_HALF_MM - 20
+ROBOT_X_MIN        = ROBOT_HALF_MM + 30
+ROBOT_X_MAX        = TABLE_WIDTH_MM - ROBOT_HALF_MM - 30
 # ROBOT_SHOOT_Y      = 2100 + ROBOT_HALF_MM + 50   # mm
 ROBOT_SHOOT_Y      = 2450   # mm
 
