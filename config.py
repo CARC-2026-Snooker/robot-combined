@@ -87,7 +87,8 @@ CAM_4K_SIDEWAYS_M = 0.00    # lateral offset; 0 for now
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # HD CAMERA — TRACKING
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-HD_RESOLUTION   = (1280, 720)    # width × height in pixels
+# HD_RESOLUTION   = (1280, 720)    # width × height in pixels
+HD_RESOLUTION   = (1920, 1080)    # width × height in pixels
 HD_FPS          = 30
 HD_CAM_PARAMS   = [2338.02*0.879595, 2316.26*0.879595, 843.71, 352.60]  # fx, fy, cx, cy at 1080p
 # Scale factor: actual_h / 1080.0 applied at runtime
@@ -150,17 +151,27 @@ HD_BALL_RED_LO1  = (0,   50,  20)
 HD_BALL_RED_HI1  = (15,  255, 255)
 HD_BALL_RED_LO2  = (165, 50,  20)
 HD_BALL_RED_HI2  = (180, 255, 255)
-HD_BALL_BLUE_LO  = (95,  50,  30)
+HD_BALL_BLUE_LO  = (95,  50,  10)
 HD_BALL_BLUE_HI  = (150, 255, 255)
 HD_BALL_WHITE_LO = (180, 75,  255)
 HD_BALL_WHITE_HI = (180, 75,  255)
-HD_BALL_PERCENT_THRESHOLD = 0.05
+HD_BALL_PERCENT_THRESHOLD = 0.01
+HD_BALL_MIN_PIXELS = 800
+
+# ── Dynamic (projected) scan zone tuning ─────────────────────────────────────
+# When robot position is known, main.py projects REAL_ZONES into pixel space
+# and builds full-height detection columns instead of using the fixed boxes above.
+# Tune these if the projected zones are consistently offset in one direction.
+HD_SCAN_PROJ_OFFSET_X  =  0    # px — shift ALL projected zone centres left(-)/right(+)
+HD_SCAN_PROJ_OFFSET_Y  =  0    # px — shift zone top/bottom up(-)/down(+)
+HD_SCAN_V_CROP_TOP     = 0.275  # fraction of frame height to skip at top (sky/ceiling)
+HD_SCAN_V_CROP_BOT     = 0.275  # fraction of frame height to skip at bottom (floor/robot)
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # 4K CAMERA
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# CAM_4K_RESOLUTION = (3840, 2160)   # set lower for Pi performance; was 3840×2160
-CAM_4K_RESOLUTION = (2560, 1440)   # set lower for Pi performance; was 3840×2160
+CAM_4K_RESOLUTION = (3840, 2160)   # set lower for Pi performance; was 3840×2160
+# CAM_4K_RESOLUTION = (2560, 1440)   # set lower for Pi performance; was 3840×2160 (cant use this one, makes the camera go weird with the lining up stuff)
 CAM_4K_PARAMS     = [2189.67, 2166.18, 989.41, 736.70]  # fx, fy, cx, cy at 1080p
 CAM_4K_DIST_COEFFS = np.array(
     [[0.26176172, -1.26840109, 0.01521634, 0.01708042, 2.2519771]]
@@ -172,7 +183,7 @@ CAM_4K_BALL_RED = [
     (np.array([165, 50,  20]),  np.array([180, 255, 255])),
 ]
 CAM_4K_BALL_BLUE = [
-    (np.array([65,  10,  10]),  np.array([170, 255, 255])),
+    (np.array([55,  10,  10]),  np.array([170, 255, 255])),
 ]
 
 # Lateral lock tolerance (pixels at full capture resolution)

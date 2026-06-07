@@ -97,7 +97,7 @@ def run_server():
             elif cmd == "rotate_by":
                 speed  = int(msg.get("speed",  50))
                 degree = int(msg.get("degree",  0))
-                robot.Rotate(speed, degree)   # blocks until done
+                robot.RotateStack(speed, degree)   # blocks until done
                 moving = False
 
             # ── Stop commands ────────────────────────────────────────────────

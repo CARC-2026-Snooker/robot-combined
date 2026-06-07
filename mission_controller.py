@@ -12,6 +12,7 @@ All movement commands are in ROBOT FRAME (not table frame).
 """
 
 import sys, os, time, json, math, subprocess, socket, threading
+from datetime import datetime
 sys.path.insert(0, os.path.dirname(__file__))
 
 from config import (
@@ -327,7 +328,7 @@ def wait_for_sniper_lock(sniper: SniperState,
     # SETTLE_S: how long to wait after braking before reading the next error.
     # Longer settle = more accurate reading but slower convergence.
     PULSE_S        = 0.05   # 80ms pulse — short enough to not overshoot
-    SETTLE_S       = 0.10   # 200ms settle — camera updates + robot stops
+    SETTLE_S       = 0.20   # 200ms settle — camera updates + robot stops
 
     t0 = time.time()
     last_print = 0.0
@@ -706,19 +707,12 @@ def demo_all_commands(state: RobotState, mc: MovementClient):
     # Move with simultaneous rotation
     mc.move(speed=25, degree=0, rotation=15); time.sleep(0.4); mc.brake(); time.sleep(0.3)
 
-    # ── 4. Blocking precise rotation ──────────────────────────────────────
-    print("\n[4] rotate_by (BLOCKING encoder-based, use for snap turns only):")
-    mc.rotate_by(speed=80, degree=45)    # rotate 45° CW — blocks until done
-    mc.rotate_by(speed=80, degree=-45)   # rotate 45° CCW back
-
     # ── 6. Actions ────────────────────────────────────────────────────────
     print("\n[6] Actions:")
     mc.action("open_claw");          time.sleep(0.5)
     mc.action("close_claw");         time.sleep(0.5)
     mc.action("rev_spin_power", 30); time.sleep(1.0)
     mc.action("stop_spin_power");    time.sleep(0.3)
-    mc.action("rev_spin_speed", 40); time.sleep(1.0)
-    mc.action("stop_spin_speed");    time.sleep(0.3)
 
     # ── 7. world_errors_to_omni — what drive_to uses internally ──────────
     print("\n[7] world_errors_to_omni:")
@@ -756,9 +750,7 @@ def main():
     last_side = 0 # left:0 right:1
 
     # demo_all_commands(state, mc)
-
-    # actual thing starts here, so we dont have to manually open the stuff beforehand
-    # init/start all the programs n stuff
+    shot_time = None
     
     # go to left side infront of white balls pedestal
     mc.omni(vX=-30, vY=-190, vR=-200)
@@ -779,8 +771,15 @@ def main():
             time.sleep(1.75)
             mc.brake()
 
-            PHOTO_POS_X, PHOTO_POS_Y, PHOTO_HEAD = 600, 2360, 270.0
+            PHOTO_POS_X, PHOTO_POS_Y, PHOTO_HEAD = 600, 2640, 270.0
             drive_to(PHOTO_POS_X, PHOTO_POS_Y, PHOTO_HEAD, state, mc, pos_tol_mm=10.0, ang_tol_deg=1.0)
+
+            # wait until it's been 15s since the last shot
+            if shot_time:
+                sec_since_shot = (datetime.now() - shot_time).total_seconds()
+                while sec_since_shot < 15:
+                    print(f"waiting 15 seconds after last shot, {sec_since_shot} seconds left")
+                    sec_since_shot = (datetime.now() - shot_time).total_seconds()
 
             # take a capture of the view and get plan
             plan = do_scan()
@@ -820,10 +819,12 @@ def main():
 
             # Drive to coarse alignment position
             rx, ry = shot["robot_alignment_xy"]
-            drive_to(rx, ry, shot["firing_angle_deg"], state, mc)
+            # drive_to(rx, ry, shot["firing_angle_deg"], state, mc)
+            drive_to(rx, ry, 270.0, state, mc)
+            mc.rotate_by(speed=100, degree=shot["firing_angle_deg"] - 270.0)
 
-            mc.brake()
-            time.sleep(0.3)
+            # mc.brake()
+            # time.sleep(0.3)
 
             # Create SniperState BEFORE sending confirm_shot (so socket is bound and ready)
             sniper_st = SniperState(SNIPER_TELEMETRY_PORT)
@@ -864,13 +865,14 @@ def main():
                     _fire_sock.close()
 
                     # Fire mechanism — spin starts AFTER lock, no vibration during aiming
-                    mc.action("rev_spin_speed", 200)
+                    mc.action("rev_spin_power", 100)
                     time.sleep(2)
                     mc.action("release_trigger")
                     time.sleep(2)
                     mc.action("reset_trigger")
-                    mc.action("stop_spin_speed")
+                    mc.action("stop_spin_power")
                     print("    Shot fired!")
+                    shot_time = datetime.now()
                 else:
                     print("    Lock timed out — skipping shot.")
                     mc.action("stop_spin_speed")
@@ -886,15 +888,13 @@ def main():
                 break
 
             # go to between the two sides, left first, then right
-            drive_to(600, 3100, PHOTO_HEAD, state, mc, pos_tol_mm=20.0, ang_tol_deg=1.0) # 3080
+            drive_to(600, 3105, PHOTO_HEAD, state, mc, pos_tol_mm=20.0, ang_tol_deg=1.0)
             if white_balls[0]: # if still have left do left, else right
-                mc.omni(vX=-30, vY=-190, vR=200)
+                mc.rotate_by(speed=200, degree=90)
                 last_side = 0
             else:
-                mc.omni(vX=30, vY=-190, vR=-200)
+                mc.rotate_by(speed=200, degree=-90)
                 last_side = 1
-            time.sleep(1.9)
-            mc.brake()
 
         drive_to(600, 3375, PHOTO_HEAD, state, mc, pos_tol_mm=20.0, ang_tol_deg=1.0)
         
