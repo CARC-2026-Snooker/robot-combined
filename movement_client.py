@@ -160,8 +160,12 @@ def move(speed: int, degree: int, rotation: int = 0) -> MoveCmd:
     return MoveCmd(cmd="move", speed=speed, degree=degree, rotation=rotation)
 
 def rotate_by(speed: int, degree: int) -> MoveCmd:
-    """robot.Rotate(speed, degree). BLOCKING — encoder-based precise snap."""
+    """robot.RotateStack(speed, degree). BLOCKING — encoder-based precise snap."""
     return MoveCmd(cmd="rotate_by", speed=speed, degree=degree)
+
+# def rotate_to(speed: int, degree: int) -> MoveCmd:
+#     """robot.Rotate(speed, degree). BLOCKING — encoder-based precise snap."""
+#     return MoveCmd(cmd="rotate_to", speed=speed, degree=degree)
 
 def brake() -> MoveCmd:
     return MoveCmd(cmd="brake")
@@ -201,6 +205,10 @@ class MovementClient:
     def rotate_by(self, speed: int, degree: int):
         """Blocking precise rotation. Positive degree = CW."""
         self.send(rotate_by(speed, degree))
+
+    # def rotate_to(self, speed: int, degree: int):
+    #     """Blocking precise rotation. Positive degree = CW."""
+    #     self.send(rotate_to(speed, degree))
 
     def brake(self):
         """Hold motors in place."""

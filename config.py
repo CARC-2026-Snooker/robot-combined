@@ -156,7 +156,7 @@ HD_BALL_BLUE_HI  = (150, 255, 255)
 HD_BALL_WHITE_LO = (180, 75,  255)
 HD_BALL_WHITE_HI = (180, 75,  255)
 HD_BALL_PERCENT_THRESHOLD = 0.01
-HD_BALL_MIN_PIXELS = 800
+HD_BALL_MIN_PIXELS = 700
 
 # ── Dynamic (projected) scan zone tuning ─────────────────────────────────────
 # When robot position is known, main.py projects REAL_ZONES into pixel space
@@ -206,7 +206,7 @@ HD_BRIGHTNESS_BOOST   = 1.0  # 1.0=off; increase if image is dark after low-expo
 # Power range: 0–100 (passed directly to Robot.Move / Robot.Rotate)
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 MOVE_POWER_MIN  = 10    # slowest movement power (near target)
-MOVE_POWER_MAX  = 200    # fastest movement power (far from target)
+MOVE_POWER_MAX  = 300    # fastest movement power (far from target)
 
 ROT_POWER_MIN   = 10    # slowest rotation power
 ROT_POWER_MAX   = 80    # fastest rotation power

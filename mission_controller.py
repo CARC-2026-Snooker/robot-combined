@@ -12,6 +12,8 @@ All movement commands are in ROBOT FRAME (not table frame).
 """
 
 import sys, os, time, json, math, subprocess, socket, threading
+from dataclasses import dataclass
+import time
 from datetime import datetime
 sys.path.insert(0, os.path.dirname(__file__))
 
@@ -34,6 +36,48 @@ from ball_align import BallAlignState, do_ball_align
 import signal
 import random
 import traceback
+
+def _clamp(v: float, lo: float, hi: float) -> float:
+    return max(lo, min(hi, v))
+
+@dataclass
+class PID:
+    kp: float
+    ki: float = 0.0
+    kd: float = 0.0
+    output_limit: float = 100.0
+    integral_limit: float = 1000.0
+    deadband: float = 0.0
+
+    integral: float = 0.0
+    prev_error: float | None = None
+
+    def reset(self) -> None:
+        self.integral = 0.0
+        self.prev_error = None
+
+    def update(self, error: float, dt: float) -> float:
+        if abs(error) <= self.deadband:
+            error = 0.0
+
+        if dt <= 0.0:
+            dt = 1e-3
+
+        self.integral = _clamp(
+            self.integral + error * dt,
+            -self.integral_limit,
+            self.integral_limit,
+        )
+
+        derivative = 0.0 if self.prev_error is None else (error - self.prev_error) / dt
+        self.prev_error = error
+
+        out = (
+            self.kp * error +
+            self.ki * self.integral +
+            self.kd * derivative
+        )
+        return _clamp(out, -self.output_limit, self.output_limit)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # ROBOT STATE — live telemetry subscriber
@@ -215,9 +259,10 @@ class SniperState:
                 data = json.loads(raw.decode())
                 with self._lock:
                     self._data = data
-                    print(f"[SniperState DEBUG] Received | init={data.get('initialized')} | "
-                          f"x_err={data.get('x_error_mm')} | y_err={data.get('y_error_mm')} | "
-                          f"state={data.get('state')} | fully_locked={data.get('fully_locked')}")
+                    print(f"[SniperState DEBUG] init={data.get('initialized')} | "
+                          f"ang_correction_deg={data.get('ang_correction_deg')} | ang_locked={data.get('ang_locked')} | "
+                          f"lateral_px/mm={data.get('lateral_mm')}/{data.get('lateral_error_px')} | lat_locked={data.get('lat_locked')} | "
+                          f"state={data.get('state')} | pos_locked={data.get('pos_locked')} | fully_locked={data.get('fully_locked')}")
             except (socket.timeout, json.JSONDecodeError):
                 pass
             except Exception as e:
@@ -293,138 +338,351 @@ class SniperState:
         try: self._sock.close()
         except: pass
 
+def _scaled_pulse(error_abs: float,
+                  full_error: float,
+                  min_s: float = 0.01,
+                  max_s: float = 0.08) -> float:
+    """
+    Small error -> short pulse.
+    Large error -> long pulse.
+    """
+    ratio = _clamp(error_abs / full_error, 0.0, 1.0)
+    return min_s + ratio * (max_s - min_s)
+
+def _scaled_settle(error_abs: float,
+                   full_error: float,
+                   min_s: float = 0.20,
+                   max_s: float = 0.60) -> float:
+    """
+    Near lock -> wait longer for camera to catch up.
+    """
+    ratio = 1.0 - _clamp(error_abs / full_error, 0.0, 1.0)
+    return min_s + ratio * (max_s - min_s)
 
 def wait_for_sniper_lock(sniper: SniperState,
                          mc: MovementClient,
                          timeout: float = 30.0,
                          verbose: bool = True) -> bool:
-    """
-    Actively nudge the robot until the sniper reaches full lock.
 
-    Uses a pulse → brake → settle cycle to avoid overshoot:
-      1. Read error from sniper telemetry
-      2. If correction needed: send a SHORT low-power pulse (PULSE_MS)
-      3. Brake immediately
-      4. Wait for the robot to stop and the camera/filter to catch up (SETTLE_MS)
-      5. Re-read and repeat
+    def _clamp(v, lo, hi):
+        return max(lo, min(hi, v))
 
-    Power is deliberately capped much lower than drive_to (max 20 vs 200)
-    because the lock tolerance is 0.3° / ~10px — any fast motion overshoots it.
-    """
-    # ── Fine-aiming power limits ─────────────────────────────────────────────
-    # These override ROT_POWER_MAX/MOVE_POWER_MAX (which are for coarse driving).
-    # Keep these LOW — the lock tolerance is tiny (0.3°, ~10px, ~5mm).
-    FINE_ROT_MIN   = 5    # minimum rotation power
-    FINE_ROT_MAX   = 25    # maximum rotation power — DO NOT raise above ~25
-    FINE_MOVE_MIN  = 5    # minimum translation power
-    FINE_MOVE_MAX  = 25    # maximum translation power — DO NOT raise above ~25
+    def _scaled_pulse(error_abs: float,
+                      full_error: float,
+                      min_s: float = 0.01,
+                      max_s: float = 0.08) -> float:
+        ratio = _clamp(error_abs / full_error, 0.0, 1.0)
+        return min_s + ratio * (max_s - min_s)
 
-    ANG_FULL_DEG   = 8.0   # degrees where power reaches FINE_ROT_MAX
-    LAT_FULL_MM    = 25.0  # mm where power reaches FINE_MOVE_MAX
-    POS_FULL_MM    = 35.0  # mm (CUT mode) where power reaches FINE_MOVE_MAX
+    def _scaled_settle(error_abs: float,
+                       full_error: float,
+                       min_s: float = 0.20,
+                       max_s: float = 0.60) -> float:
+        ratio = 1.0 - _clamp(error_abs / full_error, 0.0, 1.0)
+        return min_s + ratio * (max_s - min_s)
 
-    # ── Pulse / settle timing ────────────────────────────────────────────────
-    # PULSE_S: how long to run motors before braking.
-    # SETTLE_S: how long to wait after braking before reading the next error.
-    # Longer settle = more accurate reading but slower convergence.
-    PULSE_S        = 0.05   # 80ms pulse — short enough to not overshoot
-    SETTLE_S       = 0.20   # 200ms settle — camera updates + robot stops
+    # ─────────────────────────────────────────────────────────────
+    # Fine aiming limits
+    # ─────────────────────────────────────────────────────────────
+
+    FINE_ROT_MIN = 4
+    FINE_ROT_MAX = 30
+
+    FINE_MOVE_MIN = 4
+    FINE_MOVE_MAX = 30
+
+    ANG_FULL_DEG = 5.0
+    LAT_FULL_MM = 15.0
+    POS_FULL_MM = 20.0
+
+    # ─────────────────────────────────────────────────────────────
+    # AprilTag trust thresholds
+    # ─────────────────────────────────────────────────────────────
+
+    ANGLE_PRIORITY_DEG = 2.0
+    CUT_ANGLE_PRIORITY_DEG = 3.0
 
     t0 = time.time()
     last_print = 0.0
 
+    print("STARTING SNIPER LOCKING")
+
     while time.time() - t0 < timeout:
+
         if sniper.fully_locked:
             mc.brake()
+
             if verbose:
                 print(f"[sniper] LOCKED after {time.time()-t0:.1f}s")
+
             return True
 
         d = sniper.get()
+
         if not d:
             time.sleep(0.05)
             continue
 
         mode        = d.get("shot_mode", "STRAIGHT")
         initialized = d.get("initialized", False)
+
         ang_corr    = d.get("ang_correction_deg")
         tag_found   = d.get("tag_found_4k", False)
         ang_locked  = d.get("ang_locked", False)
+
         lat_mm      = d.get("lateral_mm")
         lat_locked  = d.get("lat_locked", False)
+
         x_err       = d.get("x_error_mm", 999.0)
         y_err       = d.get("y_error_mm", 999.0)
 
-        vX = vY = vR = 0
+        vX = 0
+        vY = 0
+        vR = 0
+
+        pulse_error = 0.0
+        pulse_full  = 1.0
+
+        # ==========================================================
+        # STRAIGHT MODE
+        # ==========================================================
 
         if mode == "STRAIGHT":
-            if tag_found and not ang_locked and ang_corr is not None:
-                rot_spd = _clamp_power(abs(ang_corr), ANG_FULL_DEG,
-                                       FINE_ROT_MIN, FINE_ROT_MAX, ROT_DEAD_DEG)
+
+            angle_large = (
+                tag_found and
+                ang_corr is not None and
+                abs(ang_corr) > ANGLE_PRIORITY_DEG
+            )
+
+            # ------------------------------------------------------
+            # Large heading error
+            # Rotate only
+            # ------------------------------------------------------
+
+            if angle_large:
+
+                rot_spd = _clamp_power(
+                    abs(ang_corr),
+                    ANG_FULL_DEG,
+                    FINE_ROT_MIN,
+                    FINE_ROT_MAX,
+                    ROT_DEAD_DEG,
+                )
+
                 vR = rot_spd if ang_corr > 0 else -rot_spd
 
-            if ang_locked and lat_mm is not None and not lat_locked:
-                lat_spd = _clamp_power(abs(lat_mm), LAT_FULL_MM,
-                                       FINE_MOVE_MIN, FINE_MOVE_MAX, MOVE_DEAD_MM)
-                vX = lat_spd if lat_mm > 0 else -lat_spd
+                pulse_error = abs(ang_corr)
+                pulse_full = ANG_FULL_DEG
+
+            # ------------------------------------------------------
+            # Small heading error
+            # Rotate + strafe together
+            # ------------------------------------------------------
+
+            else:
+
+                if tag_found and ang_corr is not None and not ang_locked:
+
+                    rot_spd = _clamp_power(
+                        abs(ang_corr),
+                        ANG_FULL_DEG,
+                        FINE_ROT_MIN,
+                        FINE_ROT_MAX,
+                        ROT_DEAD_DEG,
+                    )
+
+                    vR = rot_spd if ang_corr > 0 else -rot_spd
+
+                if lat_mm is not None and not lat_locked:
+
+                    lat_spd = _clamp_power(
+                        abs(lat_mm),
+                        LAT_FULL_MM,
+                        FINE_MOVE_MIN,
+                        FINE_MOVE_MAX,
+                        MOVE_DEAD_MM,
+                    )
+
+                    vX = lat_spd if lat_mm > 0 else -lat_spd
+
+                pulse_error = max(
+                    abs(ang_corr or 0.0),
+                    abs(lat_mm or 0.0)
+                )
+
+                pulse_full = max(
+                    ANG_FULL_DEG,
+                    LAT_FULL_MM
+                )
+
+        # ==========================================================
+        # CUT MODE
+        # ==========================================================
 
         else:
-            # CUT mode
+
+            angle_large = (
+                tag_found and
+                ang_corr is not None and
+                abs(ang_corr) > CUT_ANGLE_PRIORITY_DEG
+            )
+
+            # ------------------------------------------------------
+            # Always allow rotation correction
+            # ------------------------------------------------------
+
             if tag_found and ang_corr is not None:
-                rot_spd = _clamp_power(abs(ang_corr), ANG_FULL_DEG,
-                                       FINE_ROT_MIN, FINE_ROT_MAX, ROT_DEAD_DEG)
+
+                rot_spd = _clamp_power(
+                    abs(ang_corr),
+                    ANG_FULL_DEG,
+                    FINE_ROT_MIN,
+                    FINE_ROT_MAX,
+                    ROT_DEAD_DEG,
+                )
+
                 vR = rot_spd if ang_corr > 0 else -rot_spd
 
-            if initialized:
+            # ------------------------------------------------------
+            # Only trust position estimate when heading is decent
+            # ------------------------------------------------------
+
+            if (
+                initialized and
+                not angle_large
+            ):
+
                 dist_mm = math.hypot(x_err, y_err)
+
                 if dist_mm > MOVE_DEAD_MM:
-                    trans_spd = _clamp_power(dist_mm, POS_FULL_MM,
-                                             FINE_MOVE_MIN, FINE_MOVE_MAX, MOVE_DEAD_MM)
+
+                    trans_spd = _clamp_power(
+                        dist_mm,
+                        POS_FULL_MM,
+                        FINE_MOVE_MIN,
+                        FINE_MOVE_MAX,
+                        MOVE_DEAD_MM,
+                    )
+
                     hd = d.get("heading_dx", 0.0)
                     hy = d.get("heading_dy", -1.0)
-                    heading_deg = (math.degrees(math.atan2(hy, hd)) + 360) % 360
+
+                    heading_deg = (
+                        math.degrees(math.atan2(hy, hd))
+                        + 360
+                    ) % 360
+
                     h = math.radians(heading_deg)
-                    raw_vX =  x_err * math.sin(h) - y_err * math.cos(h)
-                    raw_vY = -x_err * math.cos(h) - y_err * math.sin(h)
+
+                    raw_vX = (
+                        x_err * math.sin(h)
+                        - y_err * math.cos(h)
+                    )
+
+                    raw_vY = (
+                        -x_err * math.cos(h)
+                        - y_err * math.sin(h)
+                    )
+
                     mag = math.hypot(raw_vX, raw_vY)
+
                     if mag > 1e-9:
-                        vX = int(round(raw_vX / mag * trans_spd))
-                        vY = int(round(raw_vY / mag * trans_spd))
+
+                        vX = int(round(
+                            raw_vX / mag * trans_spd
+                        ))
+
+                        vY = int(round(
+                            raw_vY / mag * trans_spd
+                        ))
+
+                    pulse_error = dist_mm
+                    pulse_full = POS_FULL_MM
+
+            if pulse_error <= 0:
+                pulse_error = abs(ang_corr or 0.0)
+                pulse_full = ANG_FULL_DEG
+
+        # ==========================================================
+        # Debug print
+        # ==========================================================
 
         if verbose and time.time() - last_print > 1.0:
-            ang_str = f"{ang_corr:+.2f}°" if ang_corr is not None else "searching"
-            lat_str = f"{lat_mm:+.1f}mm" if lat_mm is not None else "n/a"
+
+            ang_str = (
+                f"{ang_corr:+.2f}°"
+                if ang_corr is not None
+                else "searching"
+            )
+
+            lat_str = (
+                f"{lat_mm:+.1f}mm"
+                if lat_mm is not None
+                else "n/a"
+            )
+
             print(
-                f"  sniper: mode={mode} "
-                f"hd={'OK' if initialized else 'wait'} "
+                f"  sniper: "
+                f"mode={mode} "
                 f"tag={'FOUND' if tag_found else 'search'} "
                 f"ang={'OK' if ang_locked else ang_str} "
                 f"lat={'OK' if lat_locked else lat_str} "
-                f"x={x_err:+.1f} y={y_err:+.1f} "
-                f"{'LOCKED' if d.get('pos_locked') else 'waiting'} "
+                f"x={x_err:+.1f} "
+                f"y={y_err:+.1f} "
                 f"cmd=({vX:+d},{vY:+d},{vR:+d})"
             )
+
             last_print = time.time()
 
         if vX == 0 and vY == 0 and vR == 0:
-            # Nothing to correct — coast and check again soon
             time.sleep(0.05)
             continue
 
-        # ── Pulse → brake → settle ───────────────────────────────────────────
-        mc.send(MoveCmd(cmd="omni", vX=vX, vY=vY, vR=vR))
-        time.sleep(PULSE_S)    # run for a short burst
-        mc.brake()             # stop immediately
-        time.sleep(SETTLE_S)   # wait for robot to stop + camera to catch up
+        pulse_s = _scaled_pulse(
+            pulse_error,
+            pulse_full,
+            min_s=0.01,
+            max_s=0.08,
+        )
+
+        settle_s = _scaled_settle(
+            pulse_error,
+            pulse_full,
+            min_s=0.20,
+            max_s=0.60,
+        )
+
+        mc.send(
+            MoveCmd(
+                cmd="omni",
+                vX=vX,
+                vY=vY,
+                vR=vR,
+            )
+        )
+
+        if verbose:
+            print(
+                f"moving ({vX:+d},{vY:+d},{vR:+d}) "
+                f"pulse={pulse_s:.3f}s "
+                f"settle={settle_s:.3f}s"
+            )
+
+        time.sleep(pulse_s)
+
+        mc.brake()
+
+        time.sleep(settle_s)
 
     mc.brake()
-    if verbose:
-        print(f"[wait_for_sniper_lock] TIMEOUT after {timeout:.0f}s")
-    return False
 
-    mc.brake()
     if verbose:
-        print(f"[wait_for_sniper_lock] TIMEOUT after {timeout:.0f}s")
+        print(
+            f"[wait_for_sniper_lock] TIMEOUT after "
+            f"{timeout:.0f}s"
+        )
+
     return False
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -446,81 +704,161 @@ def drive_to(target_x_mm: float, target_y_mm: float,
     """
     Drive to (target_x_mm, target_y_mm), then rotate to final_heading_deg.
 
-    Phase 1 — translate while keeping heading near DRIVE_HEADING (270°).
-      Uses world_errors_to_omni() which computes vX, vY, vR all at once
-      and sends a single OmniMovement command per tick. With the new Robot
-      API all three axes are corrected simultaneously — no axis priority needed.
+    Phase 1:
+      PID on world X and Y position error, plus heading-hold PID at DRIVE_HEADING.
+      The world-frame PID outputs are converted into robot-frame vX/vY.
 
-    Phase 2 — rotate in place to final_heading_deg (vR only).
+    Phase 2:
+      PID on heading only, with vX=vY=0.
     """
     if verbose:
         print(f"[drive_to] target=({target_x_mm:.0f}, {target_y_mm:.0f})mm  "
               f"final={final_heading_deg:.1f}°")
 
+    # --- Tune these starting points on the real robot ---
+    # Translation:
+    x_pid = PID(kp=0.8, ki=0.001, kd=0.15,
+                output_limit=MOVE_POWER_MAX,
+                integral_limit=2000.0,
+                deadband=5.0)
+
+    y_pid = PID(kp=0.8, ki=0.001, kd=0.15,
+                output_limit=MOVE_POWER_MAX,
+                integral_limit=2000.0,
+                deadband=5.0)
+
+    # Heading hold during translation:
+    hold_heading_pid = PID(kp=2.5, ki=0.00, kd=0.08,
+                           output_limit=ROT_POWER_MAX,
+                           integral_limit=360.0,
+                           deadband=0.5)
+
+    # Final rotate-to-heading:
+    turn_heading_pid = PID(kp=3.5, ki=0.00, kd=0.10,
+                           output_limit=ROT_POWER_MAX,
+                           integral_limit=360.0,
+                           deadband=0.5)
+
     t0 = time.time()
+    last_t = t0
     _last_print = 0.0
 
     # ── Phase 1: Translate ────────────────────────────────────────────────────
-    if verbose: print("  Phase 1: translating...")
+    if verbose:
+        print("  Phase 1: translating...")
+
     while time.time() - t0 < timeout:
         if STOP_EVENT.is_set():
-            mc.brake(); return False
+            mc.brake()
+            return False
         if not state.initialized:
-            time.sleep(0.02); continue
+            time.sleep(0.02)
+            continue
+
+        now = time.time()
+        dt = now - last_t
+        last_t = now
 
         x_mm, y_mm = state.position_mm
-        x_err = x_mm - target_x_mm
-        y_err = y_mm - target_y_mm
+
+        # World-frame errors: positive means "need to move toward +axis"
+        x_err = target_x_mm - x_mm
+        y_err = target_y_mm - y_mm
+
         if math.hypot(x_err, y_err) < pos_tol_mm:
             break
 
+        # PID outputs in world coordinates
+        world_vx = x_pid.update(x_err, dt)
+        world_vy = y_pid.update(y_err, dt)
+
+        # Heading-hold PID during translation
+        # Keep your old sign convention by using _ang_diff exactly as before.
         ang_err = _ang_diff(state.heading_deg, DRIVE_HEADING)
-        cmd = world_errors_to_omni(
-            x_err_mm     = x_err,
-            y_err_mm     = y_err,
-            ang_err_deg  = ang_err,
-            heading_deg  = state.heading_deg,
-            x_full_mm    = X_FULL_POWER_MM,
-            y_full_mm    = Y_FULL_POWER_MM,
-            rot_full_deg = ROT_FULL_DEG,
+        vR = int(round(-hold_heading_pid.update(ang_err, dt)))
+
+        # Rotate world velocity into robot frame.
+        # Robot frame:
+        #   vX > 0 = right
+        #   vY > 0 = forward
+        h = math.radians(state.heading_deg)
+        sin_h = math.sin(h)
+        cos_h = math.cos(h)
+
+        vX_raw = -world_vx * sin_h + world_vy * cos_h
+        vY_raw =  world_vx * cos_h + world_vy * sin_h
+
+        # Keep combined translation under the motor limit
+        mag = math.hypot(vX_raw, vY_raw)
+        if mag > MOVE_POWER_MAX and mag > 1e-9:
+            scale = MOVE_POWER_MAX / mag
+            vX_raw *= scale
+            vY_raw *= scale
+
+        cmd = MoveCmd(
+            cmd="omni",
+            vX=int(round(vX_raw)),
+            vY=int(round(vY_raw)),
+            vR=vR,
         )
         mc.send(cmd)
+
         if verbose and time.time() - _last_print > 1.0:
-            print(f"    pos=({x_mm:.0f},{y_mm:.0f}) err=({x_err:+.0f},{y_err:+.0f})mm "
-                  f"hdg={state.heading_deg:.1f}° ang_err={ang_err:+.1f}° → {cmd.describe()}")
+            print(
+                f"    pos=({x_mm:.0f},{y_mm:.0f}) "
+                f"err=({x_err:+.0f},{y_err:+.0f})mm "
+                f"hdg={state.heading_deg:.1f}° "
+                f"ang_err={ang_err:+.1f}° → {cmd.describe()}"
+            )
             _last_print = time.time()
+
         time.sleep(0.01)
 
     else:
         mc.brake()
-        if verbose: print("  [drive_to] TIMEOUT in phase 1.")
+        if verbose:
+            print("  [drive_to] TIMEOUT in phase 1.")
         return False
 
-    mc.brake(); time.sleep(0.3)
+    mc.brake()
+    time.sleep(0.3)
 
     # ── Phase 2: Rotate to final heading ──────────────────────────────────────
-    if verbose: print(f"  Phase 2: rotating to {final_heading_deg:.1f}°...")
-    from movement_client import _clamp_power
+    if verbose:
+        print(f"  Phase 2: rotating to {final_heading_deg:.1f}°...")
+
+    turn_heading_pid.reset()
     rot_t0 = time.time()
+    last_t = rot_t0
+
     while time.time() - rot_t0 < 10.0:
         if STOP_EVENT.is_set():
-            mc.brake(); return False
+            mc.brake()
+            return False
         if not state.initialized:
-            time.sleep(0.02); continue
+            time.sleep(0.02)
+            continue
+
+        now = time.time()
+        dt = now - last_t
+        last_t = now
+
         ang_err = _ang_diff(state.heading_deg, final_heading_deg)
         if abs(ang_err) < ang_tol_deg:
             break
-        rot_spd = _clamp_power(abs(ang_err), ROT_FULL_DEG,
-                               ROT_POWER_MIN, ROT_POWER_MAX, ROT_DEAD_DEG)
-        mc.omni(vR=-rot_spd if ang_err > 0 else rot_spd)
+
+        vR = int(round(-turn_heading_pid.update(ang_err, dt)))
+        mc.omni(vR=vR)
         time.sleep(0.01)
 
-    mc.brake(); time.sleep(0.2)
+    mc.brake()
+    time.sleep(0.2)
+
     if verbose:
         x, y = state.position_mm
         print(f"  Arrived: ({x:.0f}, {y:.0f})mm  heading={state.heading_deg:.1f}°")
-    return True
 
+    return True
 
 # ─────────────────────────────────────────────────────────────────────────────
 # AUTOMATIC SCAN — triggers new_main3 to take a photo and run the planner
@@ -753,9 +1091,10 @@ def main():
     shot_time = None
     
     # go to left side infront of white balls pedestal
-    mc.omni(vX=-30, vY=-190, vR=-200)
+    mc.omni(vX=-80, vY=-160, vR=-200)
     time.sleep(1.9)
     mc.brake()
+    # mc.rotate_to(speed=100, degree=-90)
 
     try:
         while True:
@@ -768,7 +1107,7 @@ def main():
                 mc.omni(vX=-100, vY=300, vR=-200)
             else:
                 mc.omni(vX=100, vY=300, vR=200)
-            time.sleep(1.75)
+            time.sleep(1.5)
             mc.brake()
 
             PHOTO_POS_X, PHOTO_POS_Y, PHOTO_HEAD = 600, 2640, 270.0
@@ -865,7 +1204,7 @@ def main():
                     _fire_sock.close()
 
                     # Fire mechanism — spin starts AFTER lock, no vibration during aiming
-                    mc.action("rev_spin_power", 100)
+                    mc.action("rev_spin_power", 70)
                     time.sleep(2)
                     mc.action("release_trigger")
                     time.sleep(2)
