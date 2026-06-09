@@ -29,6 +29,8 @@ CAM_FRONT = "/dev/camera_front"
 CAM_BACK = "/dev/camera_back"
 CAM_4K = "/dev/camera_4k"
 
+DISABLE_IMU = True
+
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # NETWORK
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -37,11 +39,12 @@ MOVEMENT_HOST      = "127.0.0.1"   # where movement_server runs (same Pi)
 
 # config.py
 SNIPER_TELEMETRY_PORT = 5004
-TELEMETRY_PORT = 5005
+TELEMETRY_PORT     = 5005
 MOVEMENT_CMD_PORT  = 5010   # vision → movement (drive commands)
 BALL_ALIGN_PORT    = 5006   # ball_align.py → mission_controller (pickup alignment)
 VISION_CMD_PORT    = 5007   # mission_controller → new_main3 (trigger scan etc.)
-SNIPER_FIRE_PORT = 5008
+SNIPER_FIRE_PORT   = 5008
+IMU_TELEMETRY_PORT = 5009
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # FIELD GEOMETRY  (all in metres, origin = Tag 3 / Hole_3 corner)
@@ -156,7 +159,7 @@ HD_BALL_BLUE_HI  = (150, 255, 255)
 HD_BALL_WHITE_LO = (180, 75,  255)
 HD_BALL_WHITE_HI = (180, 75,  255)
 HD_BALL_PERCENT_THRESHOLD = 0.01
-HD_BALL_MIN_PIXELS = 700
+HD_BALL_MIN_PIXELS = 500
 
 # ── Dynamic (projected) scan zone tuning ─────────────────────────────────────
 # When robot position is known, main.py projects REAL_ZONES into pixel space
@@ -172,10 +175,9 @@ HD_SCAN_V_CROP_BOT     = 0.275  # fraction of frame height to skip at bottom (fl
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 CAM_4K_RESOLUTION = (3840, 2160)   # set lower for Pi performance; was 3840×2160
 # CAM_4K_RESOLUTION = (2560, 1440)   # set lower for Pi performance; was 3840×2160 (cant use this one, makes the camera go weird with the lining up stuff)
-CAM_4K_PARAMS     = [2189.67, 2166.18, 989.41, 736.70]  # fx, fy, cx, cy at 1080p
-CAM_4K_DIST_COEFFS = np.array(
-    [[0.26176172, -1.26840109, 0.01521634, 0.01708042, 2.2519771]]
-)
+CAM_4K_PARAMS = [6748.88635098, 5704.37257865, 952.52489856, 439.07492332]
+# CAM_4K_DIST_COEFFS = np.array([[3.79017048e+00, -9.03629715e+01, -2.40336475e-01, -2.32070792e-02, 3.08415858e+02]])
+CAM_4K_DIST_COEFFS = None
 
 # Ball colour masks used in the 4K sniper view
 CAM_4K_BALL_RED = [
@@ -183,7 +185,7 @@ CAM_4K_BALL_RED = [
     (np.array([165, 50,  20]),  np.array([180, 255, 255])),
 ]
 CAM_4K_BALL_BLUE = [
-    (np.array([55,  10,  10]),  np.array([170, 255, 255])),
+    (np.array([65,  20,  20]),  np.array([150, 255, 255])),
 ]
 
 # Lateral lock tolerance (pixels at full capture resolution)
@@ -196,7 +198,7 @@ ANGLE_LOCK_DEG = 0.3
 # RASPBERRY PI PERFORMANCE
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 DETECT_EVERY_N_FRAMES = 1    # AprilTag detection runs every N HD frames (1=every frame)
-DISPLAY_SCALE         = 0.5 # Scale display windows (1.0=full, 0.5=half)
+DISPLAY_SCALE         = 0.25 # Scale display windows (1.0=full, 0.5=half)
 # DISPLAY_SCALE         = 0.7 # Scale display windows (1.0=full, 0.5=half)
 
 HD_BRIGHTNESS_BOOST   = 1.0  # 1.0=off; increase if image is dark after low-exposure tuning

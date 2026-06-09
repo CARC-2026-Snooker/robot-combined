@@ -31,21 +31,56 @@ Protocol (JSON over UDP on MOVEMENT_CMD_PORT):
                "rev_spin_speed"  | "stop_spin_speed"   (speed-based spin wheel)
 """
 
-import sys, os, socket, json, time
+import sys, os, socket, json, time, threading
 from pathlib import Path
 
 # Locate Robot.py and config.py regardless of where this is run from
 sys.path.append("/home/page/Carc2026/robot-movement/library")
-sys.path.insert(0, str(Path(__file__).parent))               # Robot.py
+sys.path.insert(0, str(Path(__file__).parent))               # Robot.py, imu_reader.py
 sys.path.insert(0, str(Path(__file__).parent.parent.parent)) # config.py (project root)
 
 from config import SERIAL_PORT, SERIAL_BAUD, MOVEMENT_CMD_PORT
+try:
+    from config import IMU_TELEMETRY_PORT
+except ImportError:
+    IMU_TELEMETRY_PORT = 5009
+
 from Robot import Robot
+try:
+    from imu_reader import ImuReader
+    _IMU_AVAILABLE = True
+except ImportError:
+    _IMU_AVAILABLE = False
+    print("[movement_server] imu_reader.py not found — no IMU.")
 
 
 def run_server():
     robot = Robot(serial_port=SERIAL_PORT, baudrate=SERIAL_BAUD)
     print(f"[movement_server] Robot connected on {SERIAL_PORT}")
+
+    # ── IMU — start background reader + broadcast thread ──────────────────────
+    # start() is non-blocking; calibration happens in the IMU thread.
+    # The broadcast loop sends a snapshot every 33ms (~30Hz) to IMU_TELEMETRY_PORT.
+    # new_main3 subscribes to that port for fast STILL/MOVING detection.
+    imu = None
+    if _IMU_AVAILABLE:
+        imu = ImuReader()
+        imu.start()
+        _imu_bcast_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        def _imu_broadcast():
+            while True:
+                try:
+                    snap = imu.snapshot()
+                    _imu_bcast_sock.sendto(
+                        json.dumps(snap).encode(),
+                        ("127.0.0.1", IMU_TELEMETRY_PORT)
+                    )
+                except Exception:
+                    pass
+                time.sleep(1.0 / 30)
+        threading.Thread(target=_imu_broadcast, daemon=True,
+                         name="imu_bcast").start()
+        print(f"[movement_server] IMU broadcasting on port {IMU_TELEMETRY_PORT}")
 
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     sock.bind(("0.0.0.0", MOVEMENT_CMD_PORT))
@@ -138,6 +173,7 @@ def run_server():
     finally:
         try: robot.Break()
         except Exception: pass
+        if imu: imu.stop()
         sock.close()
 
 
