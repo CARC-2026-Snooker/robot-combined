@@ -159,7 +159,7 @@ HD_BALL_BLUE_HI  = (150, 255, 255)
 HD_BALL_WHITE_LO = (180, 75,  255)
 HD_BALL_WHITE_HI = (180, 75,  255)
 HD_BALL_PERCENT_THRESHOLD = 0.01
-HD_BALL_MIN_PIXELS = 700
+HD_BALL_MIN_PIXELS = 500
 
 # ── Dynamic (projected) scan zone tuning ─────────────────────────────────────
 # When robot position is known, main.py projects REAL_ZONES into pixel space

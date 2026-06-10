@@ -69,19 +69,19 @@ try:
     # ── Step 1: movement_server (robot + IMU) ────────────────────────────────
     processes.append(subprocess.Popen(
         ["/home/page/.local/bin/uv", "run", "movement_server.py"],
-        cwd="/home/page/Carc2026"
+        cwd="/home/page/robot-combined"
     ))
 
     # ── Step 2: new_main3 (HD camera + tracking) ─────────────────────────────
     processes.append(subprocess.Popen(
         ["/home/page/.local/bin/uv", "run", "new_main3.py"],
-        cwd="/home/page/Carc2026/robot-vision-and-planning"
+        cwd="/home/page/robot-combined/robot-vision-and-planning"
     ))
 
     # ── Step 3: ball_align ───────────────────────────────────────────────────
     processes.append(subprocess.Popen(
         ["/home/page/.local/bin/uv", "run", "ball_align.py"],
-        cwd="/home/page/Carc2026/robot-vision-and-planning"
+        cwd="/home/page/robot-combined/robot-vision-and-planning"
     ))
 
     # ── Step 4: wait for basic init then for IMU ready ───────────────────────
@@ -110,13 +110,13 @@ try:
 
     time.sleep(0.5)
     output.value = 1
-    mc = MovementClient()
+    # mc = MovementClient()
 
     # ── Step 5: mission_controller ───────────────────────────────────────────
     print("[launcher] Starting mission_controller...")
     mission = subprocess.Popen(
         ["/home/page/.local/bin/uv", "run", "mission_controller.py"],
-        cwd="/home/page/Carc2026"
+        cwd="/home/page/robot-combined"
     )
 
     processes.append(mission)
@@ -142,8 +142,8 @@ finally:
     print("[launcher] Stopping all processes...")
     time.sleep(0.05)
     output.value = 0
-    mc.brake()
-    mc.stop()
+    # mc.brake()
+    # mc.stop()
     time.sleep(0.05)
     for p in processes:
         if p.poll() is None:

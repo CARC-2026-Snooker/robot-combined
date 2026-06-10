@@ -1,7 +1,7 @@
 """
 movement_server.py — UDP listener that drives the robot via Robot.py.
 
-Run from the Carc2026/ root:
+Run from the robot-combined/ root:
     uv run robot-movement/library/movement_server.py
 
 Protocol (JSON over UDP on MOVEMENT_CMD_PORT):
@@ -35,7 +35,7 @@ import sys, os, socket, json, time, threading
 from pathlib import Path
 
 # Locate Robot.py and config.py regardless of where this is run from
-sys.path.append("/home/page/Carc2026/robot-movement/library")
+sys.path.append("/home/page/robot-combined/robot-movement/library")
 sys.path.insert(0, str(Path(__file__).parent))               # Robot.py, imu_reader.py
 sys.path.insert(0, str(Path(__file__).parent.parent.parent)) # config.py (project root)
 
@@ -132,7 +132,9 @@ def run_server():
             elif cmd == "rotate_by":
                 speed  = int(msg.get("speed",  50))
                 degree = int(msg.get("degree",  0))
+                print("rotating stack")
                 robot.RotateStack(speed, degree)   # blocks until done
+                print("done rotating")
                 moving = False
 
             # ── Blocking precise rotation (encoder-based) ────────────────────

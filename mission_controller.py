@@ -15,7 +15,6 @@ import sys, os, time, json, math, subprocess, socket, threading
 from dataclasses import dataclass
 import time
 from datetime import datetime
-sys.path.insert(0, os.path.dirname(__file__))
 
 from config import (
     TELEMETRY_PORT, SNIPER_TELEMETRY_PORT, SNIPER_FIRE_PORT, MOVE_DEAD_MM, ROT_DEAD_DEG,
@@ -30,7 +29,7 @@ from movement_client import (
     compute_move_cmd, _clamp_power  # legacy alias still available
 )
 
-sys.path.append("/home/page/Carc2026/robot-vision-and-planning")
+sys.path.append("/home/page/robot-combined/robot-vision-and-planning")
 from ball_align import BallAlignState, do_ball_align
 
 import signal
@@ -963,11 +962,12 @@ def do_pickup_sequence(mc: MovementClient,
     time.sleep(0.75)
 
     align = BallAlignState()
-    time.sleep(0.2)
+    time.sleep(0.5)
 
     if verbose:
         print("[pickup] Aligning with ball using back camera...")
     success = do_ball_align(mc, align, timeout=timeout_align, verbose=verbose)
+    time.sleep(0.5)
     align.stop()
 
     if not success:
@@ -1064,6 +1064,13 @@ def main():
     shot_time = None
 
     mc.action("close_claw")
+
+    # mc.rotate_by(speed=200, degree=-90)
+    # time.sleep(7)
+    # mc.rotate_by(speed=100, degree=20)
+    # time.sleep(5)
+
+    # return
     
     # go to left side in front of white balls pedestal
     mc.omni(vX=-80, vY=-160, vR=-190)
@@ -1074,7 +1081,11 @@ def main():
     try:
         while True:
 
-            do_pickup_sequence(mc)
+            result = do_pickup_sequence(mc, verbose=True)
+            while not result:
+                print("previous pick up attempt failed, trying again")
+                result = do_pickup_sequence(mc, verbose=True)
+
             white_balls[last_side] = white_balls[last_side] - 1
 
             # go back to middle and align to view point
@@ -1133,14 +1144,15 @@ def main():
             shot = plan[picked_zone]
             print(f"\n[9] Shooting zone {picked_zone} ({shot['color']} → {shot['target_pocket']})")
 
+            # input("before sniper location aim")
+
             # Drive to coarse alignment position
             rx, ry = shot["robot_alignment_xy"]
-            # drive_to(rx, ry, shot["firing_angle_deg"], state, mc)
             drive_to(rx, ry, 270.0, state, mc)
-            mc.rotate_by(speed=100, degree=shot["firing_angle_deg"] - 270.0)
+            drive_to(rx, ry, shot["firing_angle_deg"], state, mc)
+            time.sleep(0.3)
 
-            # mc.brake()
-            # time.sleep(0.3)
+            # input("arrived")
 
             # Create SniperState BEFORE sending confirm_shot (so socket is bound and ready)
             sniper_st = SniperState(SNIPER_TELEMETRY_PORT)
@@ -1205,12 +1217,21 @@ def main():
 
             # go to between the two sides, left first, then right
             drive_to(600, 3105, PHOTO_HEAD, state, mc, pos_tol_mm=20.0, ang_tol_deg=1.0)
+            mc.brake()
+            time.sleep(0.3)
             if white_balls[0]: # if still have left do left, else right
-                mc.rotate_by(speed=200, degree=90)
+                mc.omni(vX=0, vY=0, vR=360)
+                time.sleep(1)
+                mc.brake()
+                # mc.rotate_by(speed=200, degree=90)
                 last_side = 0
             else:
-                mc.rotate_by(speed=200, degree=-90)
+                mc.omni(vX=0, vY=0, vR=-360)
+                time.sleep(1)
+                mc.brake()
+                # mc.rotate_by(speed=200, degree=-90)
                 last_side = 1
+            time.sleep(0.5)
 
         drive_to(600, 3000, PHOTO_HEAD, state, mc, pos_tol_mm=40.0, ang_tol_deg=3.0)
         # drive_to(600, 3375, PHOTO_HEAD, state, mc, pos_tol_mm=20.0, ang_tol_deg=1.0) # actual where we want to go
@@ -1222,6 +1243,7 @@ def main():
         raise
 
     finally:
+        mc.brake()
         emergency_stop("program exit")
         state.stop()
         mc.close()
