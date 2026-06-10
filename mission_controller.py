@@ -385,10 +385,10 @@ def wait_for_sniper_lock(sniper: SniperState,
     # Fine aiming limits
     # ─────────────────────────────────────────────────────────────
 
-    FINE_ROT_MIN = 4
+    FINE_ROT_MIN = 7
     FINE_ROT_MAX = 20
 
-    FINE_MOVE_MIN = 4
+    FINE_MOVE_MIN = 7
     FINE_MOVE_MAX = 25
 
     ANG_FULL_DEG = 15.0
@@ -399,8 +399,8 @@ def wait_for_sniper_lock(sniper: SniperState,
     # AprilTag trust thresholds
     # ─────────────────────────────────────────────────────────────
 
-    ANGLE_PRIORITY_DEG = 2.0
-    CUT_ANGLE_PRIORITY_DEG = 2.0
+    ANGLE_PRIORITY_DEG = 1.25
+    CUT_ANGLE_PRIORITY_DEG = 1.25
 
     t0 = time.time()
     last_print = 0.0
@@ -444,23 +444,35 @@ def wait_for_sniper_lock(sniper: SniperState,
         pulse_full  = 1.0
 
         # ==========================================================
-        # STRAIGHT MODE
+        # STRAIGHT MODE — three-line alignment, no heading sensor.
+        #
+        # The 4K camera sees three vertical lines:
+        #   GREEN  (AIM)    = camera centre = robot shooting axis
+        #   YELLOW (BALL)   = ball centroid column
+        #   MAGENTA(TARGET) = tag column ± live corner offset
+        #
+        # sniper_4k.py computes:
+        #   ang_correction_deg = mid_error_deg
+        #     = ((ball_col + target_col)/2 - cam_cx) converted to degrees
+        #     → drives vR (ROTATE) to centre the midpoint on the camera axis
+        #     positive = midpoint right of centre → TURN RIGHT
+        #
+        #   lateral_mm = diff_mm
+        #     = (ball_col - target_col) / lateral_sens_px_per_mm
+        #     → drives vX (STRAFE) to collapse the gap between ball and target
+        #     positive = ball right of target → MOVE RIGHT
+        #
+        # Both axes run SIMULTANEOUSLY — no priority switching.
+        # Rotating shifts both lines equally; strafing shifts them by different
+        # amounts (depth ratio), so the two signals are nearly decoupled.
+        #
+        # Both zero ↔ ball_col = target_col = cam_cx ← all three lines coincide.
         # ==========================================================
 
         if mode == "STRAIGHT":
 
-            angle_large = (
-                tag_found and
-                ang_corr is not None and
-                abs(ang_corr) > ANGLE_PRIORITY_DEG
-            )
-
-            # ------------------------------------------------------
-            # Large heading error
-            # Rotate only
-            # ------------------------------------------------------
-
-            if angle_large:
+            # Rotate: drive midpoint onto camera centre
+            if ang_corr is not None and not ang_locked:
 
                 rot_spd = _clamp_power(
                     abs(ang_corr),
@@ -472,49 +484,25 @@ def wait_for_sniper_lock(sniper: SniperState,
 
                 vR = rot_spd if ang_corr > 0 else -rot_spd
 
-                pulse_error = abs(ang_corr)
-                pulse_full = ANG_FULL_DEG
+            # Strafe: drive ball column onto target column
+            if lat_mm is not None and not lat_locked:
 
-            # ------------------------------------------------------
-            # Small heading error
-            # Rotate + strafe together
-            # ------------------------------------------------------
-
-            else:
-
-                if tag_found and ang_corr is not None and not ang_locked:
-
-                    rot_spd = _clamp_power(
-                        abs(ang_corr),
-                        ANG_FULL_DEG,
-                        FINE_ROT_MIN,
-                        FINE_ROT_MAX,
-                        ROT_DEAD_DEG,
-                    )
-
-                    vR = rot_spd if ang_corr > 0 else -rot_spd
-
-                if lat_mm is not None and not lat_locked:
-
-                    lat_spd = _clamp_power(
-                        abs(lat_mm),
-                        LAT_FULL_MM,
-                        FINE_MOVE_MIN,
-                        FINE_MOVE_MAX,
-                        MOVE_DEAD_MM,
-                    )
-
-                    vX = lat_spd if lat_mm > 0 else -lat_spd
-
-                pulse_error = max(
-                    abs(ang_corr or 0.0),
-                    abs(lat_mm or 0.0)
+                lat_spd = _clamp_power(
+                    abs(lat_mm),
+                    LAT_FULL_MM,
+                    FINE_MOVE_MIN,
+                    FINE_MOVE_MAX,
+                    MOVE_DEAD_MM,
                 )
 
-                pulse_full = max(
-                    ANG_FULL_DEG,
-                    LAT_FULL_MM
-                )
+                vX = lat_spd if lat_mm > 0 else -lat_spd
+
+            pulse_error = max(
+                abs(ang_corr or 0.0),
+                abs(lat_mm or 0.0)
+            )
+
+            pulse_full = max(ANG_FULL_DEG, LAT_FULL_MM)
 
         # ==========================================================
         # CUT MODE — identical servo loop to STRAIGHT.
@@ -629,14 +617,14 @@ def wait_for_sniper_lock(sniper: SniperState,
         pulse_s = _scaled_pulse(
             pulse_error,
             pulse_full,
-            min_s=0.02,
-            max_s=0.08,
+            min_s=0.06,
+            max_s=0.09,
         )
 
         settle_s = _scaled_settle(
             pulse_error,
             pulse_full,
-            min_s=0.25,
+            min_s=0.30,
             max_s=0.60,
         )
 
@@ -972,7 +960,7 @@ def do_pickup_sequence(mc: MovementClient,
     if verbose:
         print("[pickup] Opening claw...")
     mc.action("open_claw")
-    time.sleep(0.5)
+    time.sleep(0.75)
 
     align = BallAlignState()
     time.sleep(0.2)
@@ -1193,7 +1181,7 @@ def main():
                     _fire_sock.close()
 
                     # Fire mechanism — spin starts AFTER lock, no vibration during aiming
-                    mc.action("rev_spin_power", 70)
+                    mc.action("rev_spin_power", 50)
                     time.sleep(2)
                     mc.action("release_trigger")
                     time.sleep(2)
@@ -1224,8 +1212,9 @@ def main():
                 mc.rotate_by(speed=200, degree=-90)
                 last_side = 1
 
-        drive_to(600, 3100, PHOTO_HEAD, state, mc, pos_tol_mm=40.0, ang_tol_deg=3.0)
-        drive_to(600, 3375, PHOTO_HEAD, state, mc, pos_tol_mm=20.0, ang_tol_deg=1.0)
+        drive_to(600, 3000, PHOTO_HEAD, state, mc, pos_tol_mm=40.0, ang_tol_deg=3.0)
+        # drive_to(600, 3375, PHOTO_HEAD, state, mc, pos_tol_mm=20.0, ang_tol_deg=1.0) # actual where we want to go
+        drive_to(600, 3250, PHOTO_HEAD, state, mc, pos_tol_mm=20.0, ang_tol_deg=1.0) # the robot is weird, so this is what would be the above
         
     except Exception as e:
         print(e)

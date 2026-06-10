@@ -226,8 +226,8 @@ MOVE_GAIN_MM    = 1.3   # power per mm of position error   (e.g. 50mm → power 
 ROT_GAIN_DEG    = 1.0   # power per degree of angle error  (e.g. 10° → power 10)
 
 # Dead zones — stop commanding movement below these errors
-MOVE_DEAD_MM    = 5.0   # mm  — don't move if closer than this
-ROT_DEAD_DEG    = 0.3   # °   — don't rotate if heading error is smaller than this
+MOVE_DEAD_MM    = 0.5   # mm  — don't move if closer than this
+ROT_DEAD_DEG    = 0.05   # °   — don't rotate if heading error is smaller than this
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # PLANNER — shot geometry
@@ -246,7 +246,7 @@ ROBOT_SHOOT_Y      = 2450   # mm
 # Corner pocket offset — shifts aim point inward to avoid clipping the side wall.
 # Must match in both snooker_planner.py and sniper_4k.py.
 # Set to 0 to disable.
-CORNER_OFFSET_MM   = 25.0
+CORNER_OFFSET_MM   = 20.0
 
 CORNER_EFFECTIVE_POCKETS = {
     "Hole_3": (CORNER_OFFSET_MM,              0),
