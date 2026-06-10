@@ -5,6 +5,137 @@
   "scale_y": 1.0287240046159165,
   "offset_y_m": 0.0005818115806593602,
   "rms_y_mm": 12.993122013625133,
+  "position_idw_points": [
+    {
+      "raw_x_mm": 101.31,
+      "raw_y_mm": 3369.99,
+      "lookup_x_mm": 140.0,
+      "lookup_y_mm": 3460.0,
+      "residual_x_m": -0.021385,
+      "residual_y_m": -0.007377,
+      "axes": "xyh"
+    },
+    {
+      "raw_x_mm": 529.77,
+      "raw_y_mm": 3375.32,
+      "lookup_x_mm": 529.77,
+      "lookup_y_mm": 3460.0,
+      "residual_x_m": 0.0,
+      "residual_y_m": -0.01286,
+      "axes": "yh"
+    },
+    {
+      "raw_x_mm": 937.92,
+      "raw_y_mm": 3372.82,
+      "lookup_x_mm": 1060.0,
+      "lookup_y_mm": 3460.0,
+      "residual_x_m": 0.040613,
+      "residual_y_m": -0.010278,
+      "axes": "xyh"
+    },
+    {
+      "raw_x_mm": 284.42,
+      "raw_y_mm": 3277.1,
+      "lookup_x_mm": 375.0,
+      "lookup_y_mm": 3277.1,
+      "residual_x_m": 0.025827,
+      "residual_y_m": 0.0,
+      "axes": "xh"
+    },
+    {
+      "raw_x_mm": 768.07,
+      "raw_y_mm": 3280.64,
+      "lookup_x_mm": 825.0,
+      "lookup_y_mm": 3280.64,
+      "residual_x_m": -0.020188,
+      "residual_y_m": 0.0,
+      "axes": "xh"
+    },
+    {
+      "raw_x_mm": 287.91,
+      "raw_y_mm": 3050.65,
+      "lookup_x_mm": 375.0,
+      "lookup_y_mm": 3150.0,
+      "residual_x_m": 0.022248,
+      "residual_y_m": 0.011141,
+      "axes": "xyh"
+    },
+    {
+      "raw_x_mm": 522.48,
+      "raw_y_mm": 3038.52,
+      "lookup_x_mm": 522.48,
+      "lookup_y_mm": 3150.0,
+      "residual_x_m": 0.0,
+      "residual_y_m": 0.02362,
+      "axes": "yh"
+    },
+    {
+      "raw_x_mm": 749.59,
+      "raw_y_mm": 3038.18,
+      "lookup_x_mm": 825.0,
+      "lookup_y_mm": 3150.0,
+      "residual_x_m": -0.001236,
+      "residual_y_m": 0.023975,
+      "axes": "xyh"
+    },
+    {
+      "raw_x_mm": 82.19,
+      "raw_y_mm": 2578.93,
+      "lookup_x_mm": 140.0,
+      "lookup_y_mm": 2640.0,
+      "residual_x_m": -0.001776,
+      "residual_y_m": -0.013589,
+      "axes": "xyh"
+    },
+    {
+      "raw_x_mm": 540.0,
+      "raw_y_mm": 2574.17,
+      "lookup_x_mm": 540.0,
+      "lookup_y_mm": 2640.0,
+      "residual_x_m": 0.0,
+      "residual_y_m": -0.008692,
+      "axes": "yh"
+    },
+    {
+      "raw_x_mm": 1003.76,
+      "raw_y_mm": 2576.73,
+      "lookup_x_mm": 1060.0,
+      "lookup_y_mm": 2640.0,
+      "residual_x_m": -0.026911,
+      "residual_y_m": -0.011326,
+      "axes": "xyh"
+    },
+    {
+      "raw_x_mm": 131.63,
+      "raw_y_mm": 2042.49,
+      "lookup_x_mm": 180.0,
+      "lookup_y_mm": 2100.0,
+      "residual_x_m": -0.012481,
+      "residual_y_m": -0.001735,
+      "axes": "xyh"
+    },
+    {
+      "raw_x_mm": 530.66,
+      "raw_y_mm": 2040.89,
+      "lookup_x_mm": 530.66,
+      "lookup_y_mm": 2100.0,
+      "residual_x_m": 0.0,
+      "residual_y_m": -9.9e-05,
+      "axes": "yh"
+    },
+    {
+      "raw_x_mm": 943.11,
+      "raw_y_mm": 2033.78,
+      "lookup_x_mm": 1020.0,
+      "lookup_y_mm": 2100.0,
+      "residual_x_m": -0.00471,
+      "residual_y_m": 0.00722,
+      "axes": "xyh"
+    }
+  ],
+  "position_idw_power": 2,
+  "rms_x_residual_mm": 21.408,
+  "rms_y_residual_mm": 12.993,
   "heading_idw_points": [
     {
       "x_mm": 140.0,
@@ -82,6 +213,7 @@
   "n_x": 10,
   "n_y": 12,
   "n_heading": 14,
+  "n_position_idw": 14,
   "records": [
     {
       "axes": "xyh",
@@ -210,5 +342,7 @@
       "true_heading_deg": 270.0
     }
   ],
-  "timestamp": "2026-06-06 23:08:55"
+  "timestamp": "2026-06-06 23:08:55",
+  "converted": "2026-06-09 20:52:36",
+  "format_version": 2
 }

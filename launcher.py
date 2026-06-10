@@ -18,11 +18,19 @@ import sys
 import time
 import json
 from config import DISABLE_IMU
+from gpiozero import Button, DigitalOutputDevice
+from movement_client import (
+    MovementClient, brake, stop
+)
+
 
 IMU_TELEMETRY_PORT = 5009   # matches config.py IMU_TELEMETRY_PORT
 IMU_READY_TIMEOUT  = 30.0   # max seconds to wait for IMU calibration
-STARTUP_PAUSE      = 5.0    # seconds to let movement_server/new_main3 initialise
+STARTUP_PAUSE      = 6.0    # seconds to let movement_server/new_main3 initialise
                              # before checking IMU (robot + camera need time)
+
+button = Button(10)
+output = DigitalOutputDevice(9)
 
 processes = []
 
@@ -56,21 +64,23 @@ def _wait_for_imu(timeout: float = IMU_READY_TIMEOUT) -> bool:
 
 
 try:
+    output.value = 0
+    
     # ── Step 1: movement_server (robot + IMU) ────────────────────────────────
     processes.append(subprocess.Popen(
-        ["uv", "run", "movement_server.py"],
+        ["/home/page/.local/bin/uv", "run", "movement_server.py"],
         cwd="/home/page/Carc2026"
     ))
 
     # ── Step 2: new_main3 (HD camera + tracking) ─────────────────────────────
     processes.append(subprocess.Popen(
-        ["uv", "run", "new_main3.py"],
+        ["/home/page/.local/bin/uv", "run", "new_main3.py"],
         cwd="/home/page/Carc2026/robot-vision-and-planning"
     ))
 
     # ── Step 3: ball_align ───────────────────────────────────────────────────
     processes.append(subprocess.Popen(
-        ["uv", "run", "ball_align.py"],
+        ["/home/page/.local/bin/uv", "run", "ball_align.py"],
         cwd="/home/page/Carc2026/robot-vision-and-planning"
     ))
 
@@ -87,16 +97,54 @@ try:
         else:
             print(f"[launcher] WARNING: IMU not ready after {IMU_READY_TIMEOUT:.0f}s — starting mission anyway")
 
+    tonoff = 0.5
+    tlastchange = time.time()
+    onoffstate = 1
+    output.value = onoffstate
+    while button.value == 0:
+        if time.time() - tlastchange > tonoff:
+            onoffstate ^= 1
+            output.value = onoffstate
+            tlastchange = time.time()
+        time.sleep(0.01) 
+
+    time.sleep(0.5)
+    output.value = 1
+    mc = MovementClient()
+
     # ── Step 5: mission_controller ───────────────────────────────────────────
     print("[launcher] Starting mission_controller...")
     mission = subprocess.Popen(
-        ["uv", "run", "mission_controller.py"],
+        ["/home/page/.local/bin/uv", "run", "mission_controller.py"],
         cwd="/home/page/Carc2026"
     )
-    mission.wait()
+
+    processes.append(mission)
+
+    while True:
+        # mission finished normally
+        if mission.poll() is not None:
+            break
+
+        # button pressed during run
+        if button.value == 1:
+            print("[launcher] Emergency stop button pressed!")
+            time.sleep(0.05)
+            mc.brake()
+            mc.stop()
+            output.value = 0
+            time.sleep(0.05)
+            break
+
+        time.sleep(0.05)
 
 finally:
     print("[launcher] Stopping all processes...")
+    time.sleep(0.05)
+    output.value = 0
+    mc.brake()
+    mc.stop()
+    time.sleep(0.05)
     for p in processes:
         if p.poll() is None:
             p.terminate()

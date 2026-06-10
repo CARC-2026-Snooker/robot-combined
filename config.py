@@ -125,10 +125,10 @@ HD_HISTORY_LEN  = 15      # frames of raw readings kept for std calculation
 HD_CONSENSUS_SIGMA = 0.045
 
 # Tracking filter constants — SNIPER mode (robot is stationary, tighter)
-SN_STILL_ALPHA  = 0.005
+SN_STILL_ALPHA  = 0.003
 SN_MOVE_ALPHA   = 0.30
-SN_STILL_THR    = 0.003
-SN_MOVE_THR     = 0.020
+SN_STILL_THR    = 0.005
+SN_MOVE_THR     = 0.030
 
 # Line-intersection fusion weight (0 = ignore intersection estimate, 1 = use only intersection)
 # The intersection estimate is blended with the pose estimate: final = blend * intersection + (1-blend) * pose
@@ -154,12 +154,12 @@ HD_BALL_RED_LO1  = (0,   50,  20)
 HD_BALL_RED_HI1  = (15,  255, 255)
 HD_BALL_RED_LO2  = (165, 50,  20)
 HD_BALL_RED_HI2  = (180, 255, 255)
-HD_BALL_BLUE_LO  = (95,  50,  10)
+HD_BALL_BLUE_LO  = (95,  60,  10)
 HD_BALL_BLUE_HI  = (150, 255, 255)
 HD_BALL_WHITE_LO = (180, 75,  255)
 HD_BALL_WHITE_HI = (180, 75,  255)
 HD_BALL_PERCENT_THRESHOLD = 0.01
-HD_BALL_MIN_PIXELS = 500
+HD_BALL_MIN_PIXELS = 700
 
 # ── Dynamic (projected) scan zone tuning ─────────────────────────────────────
 # When robot position is known, main.py projects REAL_ZONES into pixel space
@@ -167,7 +167,7 @@ HD_BALL_MIN_PIXELS = 500
 # Tune these if the projected zones are consistently offset in one direction.
 HD_SCAN_PROJ_OFFSET_X  =  0    # px — shift ALL projected zone centres left(-)/right(+)
 HD_SCAN_PROJ_OFFSET_Y  =  0    # px — shift zone top/bottom up(-)/down(+)
-HD_SCAN_V_CROP_TOP     = 0.275  # fraction of frame height to skip at top (sky/ceiling)
+HD_SCAN_V_CROP_TOP     = 0.300  # fraction of frame height to skip at top (sky/ceiling)
 HD_SCAN_V_CROP_BOT     = 0.275  # fraction of frame height to skip at bottom (floor/robot)
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -193,6 +193,14 @@ LATERAL_TOL_PX = 10
 
 # Angle lock tolerance (degrees)
 ANGLE_LOCK_DEG = 0.3
+
+# ── Heading blend weight ─────────────────────────────────────────────────
+# Controls how much the 4K camera heading estimate influences the final
+# blended heading used for correction.  Range: 0.0 (HD only) → 1.0 (4K only).
+# 4K is higher-resolution and zoomed; HD sees more tags simultaneously.
+# Start at 0.7 and adjust based on observed accuracy.
+# To make tunable from config.py, add:  SNIPER_4K_HEADING_WEIGHT = 0.7
+SNIPER_4K_HEADING_WEIGHT = 0.0   # ← tune: 0.0=HD only, 1.0=4K only
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # RASPBERRY PI PERFORMANCE
@@ -230,8 +238,8 @@ TABLE_LENGTH_MM    = 3600
 
 ROBOT_SIZE_MM      = 450
 ROBOT_HALF_MM      = ROBOT_SIZE_MM / 2.0
-ROBOT_X_MIN        = ROBOT_HALF_MM + 30
-ROBOT_X_MAX        = TABLE_WIDTH_MM - ROBOT_HALF_MM - 30
+ROBOT_X_MIN        = ROBOT_HALF_MM + 100
+ROBOT_X_MAX        = TABLE_WIDTH_MM - ROBOT_HALF_MM - 100
 # ROBOT_SHOOT_Y      = 2100 + ROBOT_HALF_MM + 50   # mm
 ROBOT_SHOOT_Y      = 2450   # mm
 

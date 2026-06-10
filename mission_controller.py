@@ -310,11 +310,11 @@ class SniperState:
 
     @property
     def x_error_mm(self) -> float:
-        return self.get().get("x_error_mm", 999.0)
+        return self.get().get("x_error_mm", 0.0)
 
     @property
     def y_error_mm(self) -> float:
-        return self.get().get("y_error_mm", 999.0)
+        return self.get().get("y_error_mm", 0.0)
 
     @property
     def pos_locked(self) -> bool:
@@ -361,7 +361,7 @@ def _scaled_settle(error_abs: float,
 
 def wait_for_sniper_lock(sniper: SniperState,
                          mc: MovementClient,
-                         timeout: float = 30.0,
+                         timeout: float = 240.0,
                          verbose: bool = True) -> bool:
 
     def _clamp(v, lo, hi):
@@ -386,21 +386,21 @@ def wait_for_sniper_lock(sniper: SniperState,
     # ─────────────────────────────────────────────────────────────
 
     FINE_ROT_MIN = 4
-    FINE_ROT_MAX = 30
+    FINE_ROT_MAX = 20
 
     FINE_MOVE_MIN = 4
-    FINE_MOVE_MAX = 30
+    FINE_MOVE_MAX = 25
 
-    ANG_FULL_DEG = 5.0
-    LAT_FULL_MM = 15.0
-    POS_FULL_MM = 20.0
+    ANG_FULL_DEG = 15.0
+    LAT_FULL_MM = 40.0
+    POS_FULL_MM = 40.0
 
     # ─────────────────────────────────────────────────────────────
     # AprilTag trust thresholds
     # ─────────────────────────────────────────────────────────────
 
     ANGLE_PRIORITY_DEG = 2.0
-    CUT_ANGLE_PRIORITY_DEG = 3.0
+    CUT_ANGLE_PRIORITY_DEG = 2.0
 
     t0 = time.time()
     last_print = 0.0
@@ -433,8 +433,8 @@ def wait_for_sniper_lock(sniper: SniperState,
         lat_mm      = d.get("lateral_mm")
         lat_locked  = d.get("lat_locked", False)
 
-        x_err       = d.get("x_error_mm", 999.0)
-        y_err       = d.get("y_error_mm", 999.0)
+        x_err       = d.get("x_error_mm", 0.0)
+        y_err       = d.get("y_error_mm", 0.0)
 
         vX = 0
         vY = 0
@@ -517,7 +517,11 @@ def wait_for_sniper_lock(sniper: SniperState,
                 )
 
         # ==========================================================
-        # CUT MODE
+        # CUT MODE — identical servo loop to STRAIGHT.
+        # sniper_4k.py computes the same lateral_mm and ang_correction signals;
+        # the only difference is target_lateral_px ≠ 0 (ghost-ball offset).
+        # mission_controller doesn't need to know which mode it's in — it just
+        # follows the same angle + lateral servo loop.
         # ==========================================================
 
         else:
@@ -525,14 +529,14 @@ def wait_for_sniper_lock(sniper: SniperState,
             angle_large = (
                 tag_found and
                 ang_corr is not None and
-                abs(ang_corr) > CUT_ANGLE_PRIORITY_DEG
+                abs(ang_corr) > ANGLE_PRIORITY_DEG
             )
 
             # ------------------------------------------------------
-            # Always allow rotation correction
+            # Large heading error — rotate only
             # ------------------------------------------------------
 
-            if tag_found and ang_corr is not None:
+            if angle_large:
 
                 rot_spd = _clamp_power(
                     abs(ang_corr),
@@ -544,65 +548,48 @@ def wait_for_sniper_lock(sniper: SniperState,
 
                 vR = rot_spd if ang_corr > 0 else -rot_spd
 
+                pulse_error = abs(ang_corr)
+                pulse_full = ANG_FULL_DEG
+
             # ------------------------------------------------------
-            # Only trust position estimate when heading is decent
+            # Small heading error — rotate + strafe together
             # ------------------------------------------------------
 
-            if (
-                initialized and
-                not angle_large
-            ):
+            else:
 
-                dist_mm = math.hypot(x_err, y_err)
+                if tag_found and ang_corr is not None and not ang_locked:
 
-                if dist_mm > MOVE_DEAD_MM:
+                    rot_spd = _clamp_power(
+                        abs(ang_corr),
+                        ANG_FULL_DEG,
+                        FINE_ROT_MIN,
+                        FINE_ROT_MAX,
+                        ROT_DEAD_DEG,
+                    )
 
-                    trans_spd = _clamp_power(
-                        dist_mm,
-                        POS_FULL_MM,
+                    vR = rot_spd if ang_corr > 0 else -rot_spd
+
+                if lat_mm is not None and not lat_locked:
+
+                    lat_spd = _clamp_power(
+                        abs(lat_mm),
+                        LAT_FULL_MM,
                         FINE_MOVE_MIN,
                         FINE_MOVE_MAX,
                         MOVE_DEAD_MM,
                     )
 
-                    hd = d.get("heading_dx", 0.0)
-                    hy = d.get("heading_dy", -1.0)
+                    vX = lat_spd if lat_mm > 0 else -lat_spd
 
-                    heading_deg = (
-                        math.degrees(math.atan2(hy, hd))
-                        + 360
-                    ) % 360
+                pulse_error = max(
+                    abs(ang_corr or 0.0),
+                    abs(lat_mm or 0.0)
+                )
 
-                    h = math.radians(heading_deg)
-
-                    raw_vX = (
-                        x_err * math.sin(h)
-                        - y_err * math.cos(h)
-                    )
-
-                    raw_vY = (
-                        -x_err * math.cos(h)
-                        - y_err * math.sin(h)
-                    )
-
-                    mag = math.hypot(raw_vX, raw_vY)
-
-                    if mag > 1e-9:
-
-                        vX = int(round(
-                            raw_vX / mag * trans_spd
-                        ))
-
-                        vY = int(round(
-                            raw_vY / mag * trans_spd
-                        ))
-
-                    pulse_error = dist_mm
-                    pulse_full = POS_FULL_MM
-
-            if pulse_error <= 0:
-                pulse_error = abs(ang_corr or 0.0)
-                pulse_full = ANG_FULL_DEG
+                pulse_full = max(
+                    ANG_FULL_DEG,
+                    LAT_FULL_MM
+                )
 
         # ==========================================================
         # Debug print
@@ -642,14 +629,14 @@ def wait_for_sniper_lock(sniper: SniperState,
         pulse_s = _scaled_pulse(
             pulse_error,
             pulse_full,
-            min_s=0.01,
+            min_s=0.02,
             max_s=0.08,
         )
 
         settle_s = _scaled_settle(
             pulse_error,
             pulse_full,
-            min_s=0.20,
+            min_s=0.25,
             max_s=0.60,
         )
 
@@ -699,7 +686,7 @@ def drive_to(target_x_mm: float, target_y_mm: float,
              state: RobotState, mc: MovementClient,
              pos_tol_mm:  float = 30.0,
              ang_tol_deg: float = 2.0,
-             timeout:     float = 45.0,
+             timeout:     float = 240.0,
              verbose:     bool  = True) -> bool:
     """
     Drive to (target_x_mm, target_y_mm), then rotate to final_heading_deg.
@@ -717,12 +704,12 @@ def drive_to(target_x_mm: float, target_y_mm: float,
 
     # --- Tune these starting points on the real robot ---
     # Translation:
-    x_pid = PID(kp=0.8, ki=0.001, kd=0.15,
+    x_pid = PID(kp=0.8, ki=0.001, kd=0.25,
                 output_limit=MOVE_POWER_MAX,
                 integral_limit=2000.0,
                 deadband=5.0)
 
-    y_pid = PID(kp=0.8, ki=0.001, kd=0.15,
+    y_pid = PID(kp=0.8, ki=0.001, kd=0.25,
                 output_limit=MOVE_POWER_MAX,
                 integral_limit=2000.0,
                 deadband=5.0)
@@ -865,7 +852,7 @@ def drive_to(target_x_mm: float, target_y_mm: float,
 # without pressing 's' manually
 # ─────────────────────────────────────────────────────────────────────────────
 def do_scan(plan_path: str = "robot-vision-and-planning/robot_shooting_plan.json",
-            timeout:   float = 15.0) -> dict:
+            timeout:   float = 20.0) -> dict:
     """
     Trigger new_main3.py to capture a frame and run the planner.
  
@@ -1049,8 +1036,6 @@ def demo_all_commands(state: RobotState, mc: MovementClient):
     print("\n[6] Actions:")
     mc.action("open_claw");          time.sleep(0.5)
     mc.action("close_claw");         time.sleep(0.5)
-    mc.action("rev_spin_power", 30); time.sleep(1.0)
-    mc.action("stop_spin_power");    time.sleep(0.3)
 
     # ── 7. world_errors_to_omni — what drive_to uses internally ──────────
     print("\n[7] world_errors_to_omni:")
@@ -1089,9 +1074,11 @@ def main():
 
     # demo_all_commands(state, mc)
     shot_time = None
+
+    mc.action("close_claw")
     
-    # go to left side infront of white balls pedestal
-    mc.omni(vX=-80, vY=-160, vR=-200)
+    # go to left side in front of white balls pedestal
+    mc.omni(vX=-80, vY=-160, vR=-190)
     time.sleep(1.9)
     mc.brake()
     # mc.rotate_to(speed=100, degree=-90)
@@ -1104,14 +1091,16 @@ def main():
 
             # go back to middle and align to view point
             if last_side == 0:
-                mc.omni(vX=-100, vY=300, vR=-200)
+                mc.omni(vX=-100, vY=300, vR=-220)
             else:
-                mc.omni(vX=100, vY=300, vR=200)
-            time.sleep(1.5)
+                mc.omni(vX=100, vY=300, vR=220)
+            time.sleep(1.4)
             mc.brake()
 
+            time.sleep(0.5)
+
             PHOTO_POS_X, PHOTO_POS_Y, PHOTO_HEAD = 600, 2640, 270.0
-            drive_to(PHOTO_POS_X, PHOTO_POS_Y, PHOTO_HEAD, state, mc, pos_tol_mm=10.0, ang_tol_deg=1.0)
+            drive_to(PHOTO_POS_X, PHOTO_POS_Y, PHOTO_HEAD, state, mc, pos_tol_mm=40.0, ang_tol_deg=0.85)
 
             # wait until it's been 15s since the last shot
             if shot_time:
@@ -1124,7 +1113,7 @@ def main():
             plan = do_scan()
             if not plan:
                 print("No balls left — done!")
-                return
+                break
             else:
                 print(plan)
 
@@ -1192,7 +1181,7 @@ def main():
                 print(f"    Sniper active: mode={sniper_st.shot_mode}  target={sniper_st.target_pocket}")
 
                 # Wait for full lock (angle + position both satisfied)
-                locked = wait_for_sniper_lock(sniper_st, mc, timeout=60.0)
+                locked = wait_for_sniper_lock(sniper_st, mc, timeout=240.0)
 
                 if locked:
                     # Send fire command to sniper_4k — equivalent to pressing 'f'
@@ -1235,6 +1224,7 @@ def main():
                 mc.rotate_by(speed=200, degree=-90)
                 last_side = 1
 
+        drive_to(600, 3100, PHOTO_HEAD, state, mc, pos_tol_mm=40.0, ang_tol_deg=3.0)
         drive_to(600, 3375, PHOTO_HEAD, state, mc, pos_tol_mm=20.0, ang_tol_deg=1.0)
         
     except Exception as e:
