@@ -1074,7 +1074,10 @@ def main():
     try:
         while True:
 
-            do_pickup_sequence(mc)
+            result = do_pickup_sequence(mc, verbose=True)
+            while not result:
+                print("previous pick up attempt failed, trying again")
+                result = do_pickup_sequence(mc, verbose=True)
             white_balls[last_side] = white_balls[last_side] - 1
 
             # go back to middle and align to view point
