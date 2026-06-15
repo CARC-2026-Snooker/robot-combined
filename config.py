@@ -25,6 +25,7 @@ import numpy as np
 SERIAL_PORT = "/dev/motor_controller"
 SERIAL_BAUD = 1_000_000
 
+
 CAM_FRONT = "/dev/camera_front"
 CAM_BACK = "/dev/camera_back"
 CAM_4K = "/dev/camera_4k"
@@ -158,6 +159,14 @@ HD_BALL_BLUE_LO  = (95,  60,  10)
 HD_BALL_BLUE_HI  = (150, 255, 255)
 HD_BALL_WHITE_LO = (180, 75,  255)
 HD_BALL_WHITE_HI = (180, 75,  255)
+# HD_BALL_RED_LO1  = (0,   92,  105)
+# HD_BALL_RED_HI1  = (179,  209, 253)
+# HD_BALL_RED_LO2  = (0,   92,  105)
+# HD_BALL_RED_HI2  = (11,  209, 253)
+# HD_BALL_BLUE_LO  = (86,  51,  50)
+# HD_BALL_BLUE_HI  = (179, 174, 142)
+HD_BALL_WHITE_LO = (180, 75,  255)
+HD_BALL_WHITE_HI = (180, 75,  255)
 HD_BALL_PERCENT_THRESHOLD = 0.01
 HD_BALL_MIN_PIXELS = 500
 
@@ -175,9 +184,10 @@ HD_SCAN_V_CROP_BOT     = 0.275  # fraction of frame height to skip at bottom (fl
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 CAM_4K_RESOLUTION = (3840, 2160)   # set lower for Pi performance; was 3840×2160
 # CAM_4K_RESOLUTION = (2560, 1440)   # set lower for Pi performance; was 3840×2160 (cant use this one, makes the camera go weird with the lining up stuff)
-CAM_4K_PARAMS = [6748.88635098, 5704.37257865, 952.52489856, 439.07492332]
+CAM_4K_PARAMS = [2015.955555976261, 1997.96427706, 1084.58388452, 647.91872346]
 # CAM_4K_DIST_COEFFS = np.array([[3.79017048e+00, -9.03629715e+01, -2.40336475e-01, -2.32070792e-02, 3.08415858e+02]])
-CAM_4K_DIST_COEFFS = None
+# CAM_4K_DIST_COEFFS = None
+CAM_4K_DIST_COEFFS = np.array([[1.04434480e+00, -6.68351083e+00, 4.91276796e-02, 5.02779789e-02, 1.02970013e+01]])
 
 # Ball colour masks used in the 4K sniper view
 CAM_4K_BALL_RED = [
@@ -187,6 +197,19 @@ CAM_4K_BALL_RED = [
 CAM_4K_BALL_BLUE = [
     (np.array([65,  20,  20]),  np.array([150, 255, 255])),
 ]
+
+# CAM_4K_BALL_RED = [
+#     (np.array([0, 92, 105]),  np.array([179, 209, 253])),
+#     (np.array([0, 92, 105]),  np.array([11, 209, 253])),
+# ]
+# CAM_4K_BALL_BLUE = [
+#     (np.array([86, 51, 50]),  np.array([179, 174, 142])),
+#     (np.array([0, 51, 50]),  np.array([77, 174, 142])),
+# ]
+# CAM_4K_BALL_BACKGROUND = [
+#     (np.array([12, 72, 42]),  np.array([179, 118, 54])),
+#     (np.array([0, 72, 42]),  np.array([35, 118, 54])),
+# ]
 
 # Lateral lock tolerance (pixels at full capture resolution)
 LATERAL_TOL_PX = 10

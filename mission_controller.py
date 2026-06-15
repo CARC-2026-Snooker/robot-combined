@@ -1047,6 +1047,65 @@ def demo_all_commands(state: RobotState, mc: MovementClient):
 
     print("\n━━━ DEMO COMPLETE ━━━")
 
+
+# ─────────────────────────────────────────────────────────────────────────────
+# SEND HELP
+# ─────────────────────────────────────────────────────────────────────────────
+PHOTO_POS_X, PHOTO_POS_Y, PHOTO_HEAD = 475, 2640, 270.0
+
+def fire(mc, shot_time, power = 40):
+    # wait until it's been 15s since the last shot
+    if shot_time:
+        sec_since_shot = (datetime.now() - shot_time).total_seconds()
+        while sec_since_shot < 15:
+            print(f"waiting 15 seconds after last shot, {sec_since_shot} seconds left")
+            sec_since_shot = (datetime.now() - shot_time).total_seconds()
+
+
+    # Fire mechanism — spin starts AFTER lock, no vibration during aiming
+    mc.action("rev_spin_power", power)
+    time.sleep(2)
+    mc.action("release_trigger")
+    time.sleep(2)
+    mc.action("reset_trigger")
+    mc.action("stop_spin_power")
+    print("    Shot fired!")
+    shot_time = datetime.now()
+    return shot_time
+
+def face_ball_picking(state, mc, white_ball_list, last_side):
+    # go to between the two sides, left first, then right
+    drive_to(550, 3100, PHOTO_HEAD, state, mc, pos_tol_mm=20.0, ang_tol_deg=1.0)
+    mc.brake()
+    time.sleep(0.3)
+    if white_ball_list[0]: # if still have left do left, else right
+        mc.omni(vX=0, vY=0, vR=360)
+        time.sleep(1)
+        mc.brake()
+        last_side = 0
+    else:
+        mc.omni(vX=0, vY=0, vR=-360)
+        time.sleep(1)
+        mc.brake()
+        last_side = 1
+    mc.omni(vX=0, vY=-180, vR=0)
+    time.sleep(0.75)
+    mc.brake()
+    time.sleep(0.5)
+
+    return last_side
+
+def go_home(state, mc):
+    drive_to(600, 3000, PHOTO_HEAD, state, mc, pos_tol_mm=40.0, ang_tol_deg=3.0)
+    # drive_to(600, 3375, PHOTO_HEAD, state, mc, pos_tol_mm=20.0, ang_tol_deg=1.0) # actual where we want to go
+    drive_to(600, 3250, PHOTO_HEAD, state, mc, pos_tol_mm=20.0, ang_tol_deg=1.0) # the robot is weird, so this is what would be the above
+
+def blind_shot(state, mc, shot_time):
+    drive_to(300, PHOTO_POS_Y, 250, state, mc, pos_tol_mm=40.0, ang_tol_deg=0.85)
+    time.sleep(1)
+    shot_time = fire(mc, shot_time, 15)
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # MAIN — your game loop goes here
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1060,17 +1119,9 @@ def main():
     white_balls = [2,2]
     last_side = 0 # left:0 right:1
 
-    # demo_all_commands(state, mc)
     shot_time = None
 
     mc.action("close_claw")
-
-    # mc.rotate_by(speed=200, degree=-90)
-    # time.sleep(7)
-    # mc.rotate_by(speed=100, degree=20)
-    # time.sleep(5)
-
-    # return
     
     # go to left side in front of white balls pedestal
     mc.omni(vX=-80, vY=-160, vR=-190)
@@ -1079,7 +1130,10 @@ def main():
     # mc.rotate_to(speed=100, degree=-90)
 
     try:
-        while True:
+        # Ball shooting
+        for i in range(4):
+            if i:
+                last_side = face_ball_picking(state, mc, white_balls, last_side)
 
             result = do_pickup_sequence(mc, verbose=True)
             while not result:
@@ -1089,24 +1143,26 @@ def main():
             white_balls[last_side] = white_balls[last_side] - 1
 
             # go back to middle and align to view point
-            if last_side == 0:
+            if last_side == 0: # Left
                 mc.omni(vX=-100, vY=300, vR=-220)
-            else:
+            else: # Right
                 mc.omni(vX=100, vY=300, vR=220)
             time.sleep(1.4)
             mc.brake()
 
             time.sleep(0.5)
 
-            PHOTO_POS_X, PHOTO_POS_Y, PHOTO_HEAD = 600, 2640, 270.0
             drive_to(PHOTO_POS_X, PHOTO_POS_Y, PHOTO_HEAD, state, mc, pos_tol_mm=40.0, ang_tol_deg=0.85)
+            # shot_time = blind_shot(state, mc, shot_time)
 
-            # wait until it's been 15s since the last shot
-            if shot_time:
-                sec_since_shot = (datetime.now() - shot_time).total_seconds()
-                while sec_since_shot < 15:
-                    print(f"waiting 15 seconds after last shot, {sec_since_shot} seconds left")
-                    sec_since_shot = (datetime.now() - shot_time).total_seconds()
+
+
+
+
+
+
+
+
 
             # take a capture of the view and get plan
             plan = do_scan()
@@ -1119,123 +1175,91 @@ def main():
             # pick what ball/zone to go for
 
             # go for red first then blue
-            zones = list(plan.values())
-            red_zones = [z for z in zones if z["color"] == "Red"]
+            color_filtered_zones = list(plan.values())
 
-            if red_zones:
-                color_filtered_zones = red_zones
-            else:
-                color_filtered_zones = zones
-            
-            # for the picked color: go for middle > corner straights > the rest (back 4)
-            color_filtered_zones = [zone["target_ball_zone"] for zone in color_filtered_zones]
-            print(color_filtered_zones)
+            if ('E' == list(plan.keys())[0] and
+                "Red" == color_filtered_zones[0]["color"]):
+                # for the picked color: go for middle > corner straights > the rest (back 4)
+                color_filtered_zones = [zone["target_ball_zone"] for zone in color_filtered_zones]
+                print(color_filtered_zones)
 
-            if 'E' in color_filtered_zones:
-                picked_zone = 'E'
+                picked_zone = color_filtered_zones[0]
 
-            elif 'A' in color_filtered_zones or 'B' in color_filtered_zones:
-                ab_zones = [z for z in color_filtered_zones if z in ('A', 'B')]
-                picked_zone = random.choice(ab_zones)
+                shot = plan[picked_zone]
+                print(f"\n[9] Shooting zone {picked_zone} ({shot['color']} → {shot['target_pocket']})")
 
-            else:
-                picked_zone = random.choice(color_filtered_zones) # TODO: need to switch it to pick the lowest/least cut angle
+                # input("before sniper location aim")
 
-            shot = plan[picked_zone]
-            print(f"\n[9] Shooting zone {picked_zone} ({shot['color']} → {shot['target_pocket']})")
+                # Drive to coarse alignment position
+                rx, ry = shot["robot_alignment_xy"]
+                drive_to(rx, ry, 270.0, state, mc)
+                drive_to(rx, ry, shot["firing_angle_deg"], state, mc)
+                time.sleep(0.3)
 
-            # input("before sniper location aim")
+                # input("arrived")
 
-            # Drive to coarse alignment position
-            rx, ry = shot["robot_alignment_xy"]
-            drive_to(rx, ry, 270.0, state, mc)
-            drive_to(rx, ry, shot["firing_angle_deg"], state, mc)
-            time.sleep(0.3)
-
-            # input("arrived")
-
-            # Create SniperState BEFORE sending confirm_shot (so socket is bound and ready)
-            sniper_st = SniperState(SNIPER_TELEMETRY_PORT)
-            time.sleep(0.1)
-
-            # Send confirm_shot to new_main3 in a background thread.
-            # new_main3 will: release its HD camera → run sniper_4k.py → reply when done.
-            # We run it in a thread so we can simultaneously monitor SniperState telemetry.
-            sniper_done = [False]
-            def _run_sniper():
-                do_confirm_shot(picked_zone, plan)
-                sniper_done[0] = True
-            threading.Thread(target=_run_sniper, daemon=True).start()
-
-            # Wait for sniper to start broadcasting telemetry (up to 10s)
-            print("    Waiting for sniper to initialise...")
-            for _ in range(100):
-                mc.brake()   # keep it pinned still
-                if sniper_st.active: break
+                # Create SniperState BEFORE sending confirm_shot (so socket is bound and ready)
+                sniper_st = SniperState(SNIPER_TELEMETRY_PORT)
                 time.sleep(0.1)
 
-            if not sniper_st.active:
-                print("    Sniper did not start — aborting.")
+                # Send confirm_shot to new_main3 in a background thread.
+                # new_main3 will: release its HD camera → run sniper_4k.py → reply when done.
+                # We run it in a thread so we can simultaneously monitor SniperState telemetry.
+                sniper_done = [False]
+                def _run_sniper():
+                    do_confirm_shot(picked_zone, plan)
+                    sniper_done[0] = True
+                threading.Thread(target=_run_sniper, daemon=True).start()
+
+                # Wait for sniper to start broadcasting telemetry (up to 10s)
+                print("    Waiting for sniper to initialise...")
+                for _ in range(100):
+                    mc.brake()   # keep it pinned still
+                    if sniper_st.active: break
+                    time.sleep(0.1)
+
+                if not sniper_st.active:
+                    print("    Sniper did not start — aborting.")
+                    sniper_st.stop()
+                else:
+                    print(f"    Sniper active: mode={sniper_st.shot_mode}  target={sniper_st.target_pocket}")
+
+                    # Wait for full lock (angle + position both satisfied)
+                    locked = wait_for_sniper_lock(sniper_st, mc, timeout=240.0)
+
+                    if locked:
+                        # Send fire command to sniper_4k — equivalent to pressing 'f'
+                        _fire_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+                        _fire_sock.sendto(
+                            json.dumps({"cmd": "fire"}).encode(),
+                            ("127.0.0.1", SNIPER_FIRE_PORT)
+                        )
+                        _fire_sock.close()
+
+                        shot_time = fire(mc, shot_time)
+                    else:
+                        print("    Lock timed out — skipping shot.")
+                        mc.action("stop_spin_speed")
+
+                # Wait for sniper to finish (new_main3 reply received) before cleaning up
+                for _ in range(50):
+                    if sniper_done[0]: break
+                    time.sleep(0.1)
                 sniper_st.stop()
             else:
-                print(f"    Sniper active: mode={sniper_st.shot_mode}  target={sniper_st.target_pocket}")
+                shot_time = blind_shot(state, mc, shot_time)
 
-                # Wait for full lock (angle + position both satisfied)
-                locked = wait_for_sniper_lock(sniper_st, mc, timeout=240.0)
 
-                if locked:
-                    # Send fire command to sniper_4k — equivalent to pressing 'f'
-                    _fire_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-                    _fire_sock.sendto(
-                        json.dumps({"cmd": "fire"}).encode(),
-                        ("127.0.0.1", SNIPER_FIRE_PORT)
-                    )
-                    _fire_sock.close()
 
-                    # Fire mechanism — spin starts AFTER lock, no vibration during aiming
-                    mc.action("rev_spin_power", 50)
-                    time.sleep(2)
-                    mc.action("release_trigger")
-                    time.sleep(2)
-                    mc.action("reset_trigger")
-                    mc.action("stop_spin_power")
-                    print("    Shot fired!")
-                    shot_time = datetime.now()
-                else:
-                    print("    Lock timed out — skipping shot.")
-                    mc.action("stop_spin_speed")
 
-            # Wait for sniper to finish (new_main3 reply received) before cleaning up
-            for _ in range(50):
-                if sniper_done[0]: break
-                time.sleep(0.1)
-            sniper_st.stop()
 
-            is_all_zero = all(x == 0 for x in white_balls)
-            if is_all_zero:
-                break
 
-            # go to between the two sides, left first, then right
-            drive_to(600, 3105, PHOTO_HEAD, state, mc, pos_tol_mm=20.0, ang_tol_deg=1.0)
-            mc.brake()
-            time.sleep(0.3)
-            if white_balls[0]: # if still have left do left, else right
-                mc.omni(vX=0, vY=0, vR=360)
-                time.sleep(1)
-                mc.brake()
-                # mc.rotate_by(speed=200, degree=90)
-                last_side = 0
-            else:
-                mc.omni(vX=0, vY=0, vR=-360)
-                time.sleep(1)
-                mc.brake()
-                # mc.rotate_by(speed=200, degree=-90)
-                last_side = 1
-            time.sleep(0.5)
 
-        drive_to(600, 3000, PHOTO_HEAD, state, mc, pos_tol_mm=40.0, ang_tol_deg=3.0)
-        # drive_to(600, 3375, PHOTO_HEAD, state, mc, pos_tol_mm=20.0, ang_tol_deg=1.0) # actual where we want to go
-        drive_to(600, 3250, PHOTO_HEAD, state, mc, pos_tol_mm=20.0, ang_tol_deg=1.0) # the robot is weird, so this is what would be the above
+
+
+
+
+        go_home(state, mc)
         
     except Exception as e:
         print(e)
