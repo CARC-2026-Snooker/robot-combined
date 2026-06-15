@@ -94,6 +94,7 @@ CAM_4K_SIDEWAYS_M = 0.00    # lateral offset; 0 for now
 HD_RESOLUTION   = (1920, 1080)    # width × height in pixels
 HD_FPS          = 30
 HD_CAM_PARAMS   = [2338.02*0.879595, 2316.26*0.879595, 843.71, 352.60]  # fx, fy, cx, cy at 1080p
+# HD_CAM_PARAMS   = [2177.59970914, 1809.14139593, 1427.97799117, 827.65056873]  # fx, fy, cx, cy at 1080p
 # Scale factor: actual_h / 1080.0 applied at runtime
 
 # HD camera distortion coefficients.
@@ -101,7 +102,7 @@ HD_CAM_PARAMS   = [2338.02*0.879595, 2316.26*0.879595, 843.71, 352.60]  # fx, fy
 # To calibrate: run cv2.calibrateCamera on a chessboard, set to the result.
 # Format: np.array([[k1, k2, p1, p2, k3]]) — same as cv2 convention.
 # HD_CAM_DIST_COEFFS = np.array([[-2.46512311e-01, 4.72856868e+00, -1.40853939e-02, -9.24473134e-03, -1.98916405e+01]])   # e.g. np.array([[-0.35, 0.12, 0.0, 0.0, 0.0]])
-HD_CAM_DIST_COEFFS = None  # e.g. np.array([[-0.35, 0.12, 0.0, 0.0, 0.0]])
+HD_CAM_DIST_COEFFS = None  # e.g. np.array([[-0.35, 0.12, 0.0, 0.0, 0.0]]) np.array([[-1.12243110e-01, 4.63456254e-01, -5.27229330e-03, 8.58197972e-02, -3.24165472e-01]])
 
 # Crop strip removed from top/bottom before detection (fraction of frame height).
 # Reduces area the detector has to search → faster.
@@ -114,10 +115,10 @@ HD_OUT_OF_BOUNDS    = 0.15    # metres outside arena boundary still accepted
 HD_MAX_POSE_JUMP    = 0.25    # metres; larger jumps discarded as outliers
 HD_TRACKING_TIMEOUT = 0.30    # seconds without tags → lose tracking
 
-HD_STILL_ALPHA  = 0.005   # low-pass alpha when robot is stationary
-HD_MOVE_ALPHA   = 0.25    # low-pass alpha when robot is moving
-HD_STILL_THR    = 0.005   # raw-reading std (m) below which = STILL
-HD_MOVE_THR     = 0.030   # raw-reading std (m) above which = MOVING
+HD_STILL_ALPHA  = 0.003   # low-pass alpha when robot is stationary
+HD_MOVE_ALPHA   = 0.20    # low-pass alpha when robot is moving
+HD_STILL_THR    = 0.004   # raw-reading std (m) below which = STILL
+HD_MOVE_THR     = 0.013   # raw-reading std (m) above which = MOVING
 HD_HISTORY_LEN  = 15      # frames of raw readings kept for std calculation
 
 # Consensus soft-rejection sigma (metres).
@@ -150,16 +151,17 @@ HD_DETECTION_ZONES = {
     "A": (1550,560, 170, 170),
 }
 
-HD_BALL_RED_LO1  = (0,   50,  20)
+HD_BALL_RED_LO1  = (0,   60,  20)
 HD_BALL_RED_HI1  = (15,  255, 255)
-HD_BALL_RED_LO2  = (165, 50,  20)
+HD_BALL_RED_LO2  = (165, 60,  20)
 HD_BALL_RED_HI2  = (180, 255, 255)
-HD_BALL_BLUE_LO  = (95,  60,  10)
+HD_BALL_BLUE_LO  = (95,  85,  10)
 HD_BALL_BLUE_HI  = (150, 255, 255)
 HD_BALL_WHITE_LO = (180, 75,  255)
 HD_BALL_WHITE_HI = (180, 75,  255)
 HD_BALL_PERCENT_THRESHOLD = 0.01
 HD_BALL_MIN_PIXELS = 700
+
 
 # ── Dynamic (projected) scan zone tuning ─────────────────────────────────────
 # When robot position is known, main.py projects REAL_ZONES into pixel space
@@ -167,7 +169,7 @@ HD_BALL_MIN_PIXELS = 700
 # Tune these if the projected zones are consistently offset in one direction.
 HD_SCAN_PROJ_OFFSET_X  =  0    # px — shift ALL projected zone centres left(-)/right(+)
 HD_SCAN_PROJ_OFFSET_Y  =  0    # px — shift zone top/bottom up(-)/down(+)
-HD_SCAN_V_CROP_TOP     = 0.300  # fraction of frame height to skip at top (sky/ceiling)
+HD_SCAN_V_CROP_TOP     = 0.35  # fraction of frame height to skip at top (sky/ceiling)
 HD_SCAN_V_CROP_BOT     = 0.275  # fraction of frame height to skip at bottom (floor/robot)
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -181,15 +183,16 @@ CAM_4K_DIST_COEFFS = None
 
 # Ball colour masks used in the 4K sniper view
 CAM_4K_BALL_RED = [
-    (np.array([0,   50,  20]),  np.array([15,  255, 255])),
-    (np.array([165, 50,  20]),  np.array([180, 255, 255])),
+    (np.array([0,   120,  20]),  np.array([15,  255, 255])),
+    (np.array([165, 120,  20]),  np.array([180, 255, 255])),
 ]
 CAM_4K_BALL_BLUE = [
     (np.array([65,  20,  20]),  np.array([150, 255, 255])),
 ]
 
 # Lateral lock tolerance (pixels at full capture resolution)
-LATERAL_TOL_PX = 10
+LATERAL_TOL_PX = 15
+CUT_MODE_INCR_PX = 10
 
 # Angle lock tolerance (degrees)
 ANGLE_LOCK_DEG = 0.3
@@ -238,15 +241,15 @@ TABLE_LENGTH_MM    = 3600
 
 ROBOT_SIZE_MM      = 450
 ROBOT_HALF_MM      = ROBOT_SIZE_MM / 2.0
-ROBOT_X_MIN        = ROBOT_HALF_MM + 100
-ROBOT_X_MAX        = TABLE_WIDTH_MM - ROBOT_HALF_MM - 100
+ROBOT_X_MIN        = ROBOT_HALF_MM + 200
+ROBOT_X_MAX        = TABLE_WIDTH_MM - ROBOT_HALF_MM - 200
 # ROBOT_SHOOT_Y      = 2100 + ROBOT_HALF_MM + 50   # mm
-ROBOT_SHOOT_Y      = 2450   # mm
+ROBOT_SHOOT_Y      = 2600   # mm
 
 # Corner pocket offset — shifts aim point inward to avoid clipping the side wall.
 # Must match in both snooker_planner.py and sniper_4k.py.
 # Set to 0 to disable.
-CORNER_OFFSET_MM   = 20.0
+CORNER_OFFSET_MM   = 25.0
 
 CORNER_EFFECTIVE_POCKETS = {
     "Hole_3": (CORNER_OFFSET_MM,              0),

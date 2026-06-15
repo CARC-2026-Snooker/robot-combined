@@ -45,7 +45,7 @@ class PID:
     kp: float
     ki: float = 0.0
     kd: float = 0.0
-    output_limit: float = 100.0
+    output_limit: float = 360.0
     integral_limit: float = 1000.0
     deadband: float = 0.0
 
@@ -385,15 +385,15 @@ def wait_for_sniper_lock(sniper: SniperState,
     # Fine aiming limits
     # ─────────────────────────────────────────────────────────────
 
-    FINE_ROT_MIN = 7
-    FINE_ROT_MAX = 20
+    FINE_ROT_MIN = 6
+    FINE_ROT_MAX = 70
 
-    FINE_MOVE_MIN = 7
-    FINE_MOVE_MAX = 25
+    FINE_MOVE_MIN = 6
+    FINE_MOVE_MAX = 70
 
-    ANG_FULL_DEG = 15.0
-    LAT_FULL_MM = 40.0
-    POS_FULL_MM = 40.0
+    ANG_FULL_DEG = 30.0
+    LAT_FULL_MM = 80.0
+    POS_FULL_MM = 80.0
 
     # ─────────────────────────────────────────────────────────────
     # AprilTag trust thresholds
@@ -617,15 +617,15 @@ def wait_for_sniper_lock(sniper: SniperState,
         pulse_s = _scaled_pulse(
             pulse_error,
             pulse_full,
-            min_s=0.06,
-            max_s=0.09,
+            min_s=0.0825,
+            max_s=0.4,
         )
 
         settle_s = _scaled_settle(
             pulse_error,
             pulse_full,
-            min_s=0.30,
-            max_s=0.60,
+            min_s=0.01,
+            max_s=0.70,
         )
 
         mc.send(
@@ -646,9 +646,11 @@ def wait_for_sniper_lock(sniper: SniperState,
 
         time.sleep(pulse_s)
 
-        mc.brake()
+        if settle_s > 0.01:
 
-        time.sleep(settle_s)
+            mc.brake()
+
+            time.sleep(settle_s)
 
     mc.brake()
 
@@ -692,18 +694,18 @@ def drive_to(target_x_mm: float, target_y_mm: float,
 
     # --- Tune these starting points on the real robot ---
     # Translation:
-    x_pid = PID(kp=0.8, ki=0.001, kd=0.25,
+    x_pid = PID(kp=1.8, ki=0, kd=4.8,
                 output_limit=MOVE_POWER_MAX,
                 integral_limit=2000.0,
                 deadband=5.0)
 
-    y_pid = PID(kp=0.8, ki=0.001, kd=0.25,
+    y_pid = PID(kp=1.8, ki=0, kd=4.8,
                 output_limit=MOVE_POWER_MAX,
                 integral_limit=2000.0,
                 deadband=5.0)
 
     # Heading hold during translation:
-    hold_heading_pid = PID(kp=2.5, ki=0.00, kd=0.08,
+    hold_heading_pid = PID(kp=2.4, ki=0.00, kd=0.08,
                            output_limit=ROT_POWER_MAX,
                            integral_limit=360.0,
                            deadband=0.5)
@@ -936,38 +938,40 @@ def do_confirm_shot(zone: str,
 # ─────────────────────────────────────────────────────────────────────────────
 def do_pickup_sequence(mc: MovementClient,
                        timeout_align: float = 25.0,
+                       search_dir: str = None,
                        verbose: bool = True) -> bool:
     """
     Full ball pickup using back-camera alignment.
     ball_align.py must be running separately (opens back camera).
 
+    Args:
+        search_dir: "LEFT" | "RIGHT" | None
+            Direction to sweep the rear camera if the ball is not immediately
+            visible when alignment starts.
+            "LEFT"  → rear camera sweeps left  (robot body turns right)
+            "RIGHT" → rear camera sweeps right (robot body turns left)
+            None    → assume robot already roughly facing the pedestal
+
     Sequence:
       1. Open claw
-      2. Align: strafe LEFT/RIGHT and move BACK until ball is centred and close
-      3. Close claw
-
-    Usage in competition loop:
-        # Drive robot to pickup position (claw facing the ball pedestal)
-        drive_to(rx, ry, PICKUP_HEADING, state, mc)
-
-        # Launch ball_align.py if not already running:
-        #   import subprocess, sys
-        #   subprocess.Popen([sys.executable, "ball_align.py"])
-        #   time.sleep(1.0)
-
-        success = do_pickup_sequence(mc)
+      2. (If search_dir) Rotate until pedestal/ball found
+      3. Align: strafe + angle-correct + approach until ball centred and close
+      4. Close claw
     """
     if verbose:
-        print("[pickup] Opening claw...")
+        print(f"[pickup] Opening claw...  search_dir={search_dir}")
     mc.action("open_claw")
-    time.sleep(0.75)
+    time.sleep(1.0)
 
     align = BallAlignState()
-    time.sleep(0.2)
+    time.sleep(0.5)
 
     if verbose:
         print("[pickup] Aligning with ball using back camera...")
-    success = do_ball_align(mc, align, timeout=timeout_align, verbose=verbose)
+    success = do_ball_align(mc, align,
+                            timeout=timeout_align,
+                            search_dir=search_dir,
+                            verbose=verbose)
     align.stop()
 
     if not success:
@@ -975,6 +979,10 @@ def do_pickup_sequence(mc: MovementClient,
         mc.brake()
         return False
 
+    mc.brake()
+    time.sleep(0.2)
+    mc.move(speed=-100, degree=0)
+    time.sleep(0.3)
     mc.brake()
     time.sleep(0.2)
     if verbose: print("[pickup] Closing claw...")
@@ -1071,10 +1079,18 @@ def main():
     mc.brake()
     # mc.rotate_to(speed=100, degree=-90)
 
+    first_ball = True
+
     try:
         while True:
-
-            result = do_pickup_sequence(mc, verbose=True)
+            if first_ball:
+                first_ball = False
+                search_dir = None
+            elif last_side == 0:
+                search_dir = "LEFT"
+            else:
+                search_dir = "RIGHT"
+            result = do_pickup_sequence(mc, search_dir=search_dir, verbose=True)
             while not result:
                 print("previous pick up attempt failed, trying again")
                 result = do_pickup_sequence(mc, verbose=True)
@@ -1103,7 +1119,47 @@ def main():
             # take a capture of the view and get plan
             plan = do_scan()
             if not plan:
-                print("No balls left — done!")
+                mc.rotate_by(speed=200, degree=-15)
+                time.sleep(0.5)
+                plan = do_scan()
+                if not plan:
+                    mc.rotate_by(speed=200, degree=30)
+                    time.sleep(0.5)
+                    plan = do_scan()
+                    if not plan:
+                        print("No ball detected. Firing anyway just in case :)")
+                        mc.action("rev_spin_power", 40)
+                        time.sleep(2)
+                        mc.action("release_trigger")
+                        time.sleep(2)
+                        mc.action("reset_trigger")
+                        mc.action("stop_spin_power")
+                        print("Shot fired!")
+                        shot_time = datetime.now()
+                        
+                        is_all_zero = all(x == 0 for x in white_balls)
+                        if is_all_zero:
+                            break
+
+                        # go to between the two sides
+                        # drive_to(600, 3000, PHOTO_HEAD, state, mc, pos_tol_mm=40.0, ang_tol_deg=3.0)
+                        drive_to(600, 3105, PHOTO_HEAD, state, mc, pos_tol_mm=20.0, ang_tol_deg=1.0)
+                        if white_balls[0]: # if still have left do left, else right
+                            mc.omni(vX=-100, vY=0, vR=0)
+                            time.sleep(1)
+                            mc.brake()
+                            mc.rotate_by(speed=200, degree=75)
+                            last_side = 0
+                        else:
+                            mc.omni(vX=100, vY=0, vR=0)
+                            time.sleep(1)
+                            mc.brake()
+                            mc.rotate_by(speed=200, degree=-77)
+                            last_side = 1
+                        time.sleep(0.5)
+                        continue
+                else:
+                    print(plan)
                 break
             else:
                 print(plan)
@@ -1184,7 +1240,7 @@ def main():
                     _fire_sock.close()
 
                     # Fire mechanism — spin starts AFTER lock, no vibration during aiming
-                    mc.action("rev_spin_power", 50)
+                    mc.action("rev_spin_power", 40)
                     time.sleep(2)
                     mc.action("release_trigger")
                     time.sleep(2)
@@ -1207,17 +1263,26 @@ def main():
                 break
 
             # go to between the two sides, left first, then right
+            # drive_to(600, 3000, PHOTO_HEAD, state, mc, pos_tol_mm=40.0, ang_tol_deg=3.0)
             drive_to(600, 3105, PHOTO_HEAD, state, mc, pos_tol_mm=20.0, ang_tol_deg=1.0)
             if white_balls[0]: # if still have left do left, else right
-                mc.rotate_by(speed=200, degree=90)
+                mc.omni(vX=-100, vY=0, vR=0)
+                time.sleep(1)
+                mc.brake()
+                mc.rotate_by(speed=200, degree=75)
                 last_side = 0
             else:
-                mc.rotate_by(speed=200, degree=-90)
+                mc.omni(vX=100, vY=0, vR=0)
+                time.sleep(1)
+                mc.brake()
+                mc.rotate_by(speed=200, degree=-77)
                 last_side = 1
+            time.sleep(1)
 
         drive_to(600, 3000, PHOTO_HEAD, state, mc, pos_tol_mm=40.0, ang_tol_deg=3.0)
         # drive_to(600, 3375, PHOTO_HEAD, state, mc, pos_tol_mm=20.0, ang_tol_deg=1.0) # actual where we want to go
-        drive_to(600, 3250, PHOTO_HEAD, state, mc, pos_tol_mm=20.0, ang_tol_deg=1.0) # the robot is weird, so this is what would be the above
+        drive_to(550, 3350, PHOTO_HEAD, state, mc, pos_tol_mm=20.0, ang_tol_deg=1.0) # the robot is weird, so this is what would be the above
+        # drive_to(550, 3400, PHOTO_HEAD, state, mc, pos_tol_mm=20.0, ang_tol_deg=1.0) # the robot is weird, so this is what would be the above
         
     except Exception as e:
         print(e)
